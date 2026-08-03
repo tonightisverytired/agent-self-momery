@@ -16,7 +16,7 @@ mcp = ["fastmcp>=1.0"]
 pg = ["psycopg[binary]>=3.1"]
 llm = ["requests>=2.31", "pydantic-ai>=2.0"]
 embed = ["FlagEmbedding>=1.2"]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "requests>=2.31"]
 
 [project.scripts]
 dnamemory = "dnamemory.cli:main"
