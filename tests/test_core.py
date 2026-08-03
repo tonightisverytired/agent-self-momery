@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """M1 核心单元测试：配置、存储、事务、幂等、生命周期、矛盾、TTL/墓碑、
-访问控制、反射压缩、持久化（docs/09 C1-C9）。"""
+访问控制、反射压缩、持久化。"""
 from datetime import datetime, timedelta
 
 import pytest

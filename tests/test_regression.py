@@ -111,7 +111,7 @@ def test_regression_metrics_gates():
 
 
 def test_regression_noise_gate():
-    """门禁口径：5 种子均值（与 docs/08 §6.1 一致）。"""
+    """门禁口径：5 种子均值。"""
     recalls = []
     for seed in (42, 1, 7, 123, 2026):
         random.seed(seed)
