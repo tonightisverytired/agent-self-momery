@@ -176,13 +176,20 @@ def main():
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--fallback-extractor", action="store_true",
                         help="注入确定性兜底抽取器，/write 开箱可测")
+    parser.add_argument("--bge-m3", action="store_true",
+                        help="加载本地缓存的 bge-m3 模型，启用真实语义路")
     args = parser.parse_args()
     token = args.token or os.environ.get("DNAMEMORY_TOKEN")
     if not token:
         parser.error("需要 --token 或环境变量 DNAMEMORY_TOKEN")
     import uvicorn
     extractor = FallbackExtractor() if args.fallback_extractor else None
-    app = create_app(path=args.path, token=token, extractor=extractor)
+    embedder = None
+    if args.bge_m3:
+        from dnamemory.embeddings import BGEM3Embedder
+        embedder = BGEM3Embedder()
+    app = create_app(path=args.path, token=token, extractor=extractor,
+                     embedder=embedder)
     uvicorn.run(app, host=args.host, port=args.port)
 
 
