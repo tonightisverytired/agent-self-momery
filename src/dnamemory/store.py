@@ -1,16 +1,27 @@
 # -*- coding: utf-8 -*-
-"""SQLite 存储层（docs/09 C2）。"""
+"""SQLite 存储层。"""
 from __future__ import annotations
 
 import sqlite3
 import threading
 import time
 import json
+import re
 from contextlib import contextmanager
 from datetime import datetime
 
-from .errors import StorageError
+from .errors import StorageError, ValidationError
 from .models import Edge, Fact, Node, Tombstone
+
+LEGAL_LIFECYCLE = frozenset({
+    ("active", "active"), ("active", "archived"), ("active", "tombstoned"),
+    ("active", "deleted"),
+    ("archived", "archived"), ("archived", "active"),
+    ("archived", "tombstoned"), ("archived", "deleted"),
+    ("tombstoned", "tombstoned"), ("tombstoned", "active"),
+    ("tombstoned", "deleted"),
+    ("deleted", "deleted"),
+})
 
 DDL = """
 CREATE TABLE IF NOT EXISTS nodes (
@@ -96,6 +107,11 @@ CREATE TABLE IF NOT EXISTS node_vectors (
   dim INTEGER NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS vector_index_meta (
+  model TEXT PRIMARY KEY,
+  dim INTEGER NOT NULL,
+  updated_at TEXT NOT NULL
+);
 """
 
 
@@ -115,6 +131,14 @@ class SQLiteStore:
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(DDL)
         self._conn.commit()
+        self._vec = None
+        try:
+            import sqlite_vec
+            self._conn.enable_load_extension(True)
+            sqlite_vec.load(self._conn)
+            self._vec = sqlite_vec
+        except Exception:  # noqa: BLE001 无向量索引时走 numpy 降级
+            self._vec = None
 
     # ---------------- 读写 ----------------
     @contextmanager
@@ -253,6 +277,103 @@ class SQLiteStore:
             return
         with self.transaction() as c:
             c.execute(sql, params)
+        self._sync_vec_after_write(node_id, dense, model,
+                                   dim or len(dense))
+
+    # ---------------- 向量索引（sqlite-vec，纯加速层） ----------------
+
+    @staticmethod
+    def _norm_vec(dense):
+        import numpy
+        v = numpy.asarray([float(x) for x in dense], dtype=float)
+        norm = numpy.linalg.norm(v)
+        if norm == 0:
+            return None
+        return (v / norm).tolist()
+
+    def _vec_table(self, model, dim):
+        slug = re.sub(r"[^0-9A-Za-z]+", "_", model)[:60]
+        return f"node_vectors_ann_{slug}_{int(dim)}"
+
+    def _vec_meta(self, model, dim):
+        rows = self.read(
+            "SELECT model, dim FROM vector_index_meta WHERE model=?",
+            (model,))
+        return bool(rows) and rows[0][1] == int(dim)
+
+    def rebuild_vector_index(self, model, dim):
+        """全量重建 ANN 投影；模型/维度变更或索引异常时调用。"""
+        if self._vec is None or not model:
+            return False
+        dim = int(dim)
+        table = self._vec_table(model, dim)
+        try:
+            with self.transaction() as conn:
+                conn.execute(f"DROP TABLE IF EXISTS {table}")
+                conn.execute(
+                    f"CREATE VIRTUAL TABLE {table} USING vec0("
+                    f"node_id INTEGER PRIMARY KEY, dense FLOAT[{dim}] "
+                    f"distance_metric=Cosine)")
+                for nid, dense, _sparse, m, d, _at in \
+                        self.fetch_node_vectors():
+                    if m != model or d != dim:
+                        continue
+                    vec = self._norm_vec(dense)
+                    if vec is None:
+                        continue
+                    conn.execute(
+                        f"INSERT INTO {table}(node_id, dense) VALUES(?,?)",
+                        (nid, json.dumps(vec)))
+                conn.execute(
+                    "INSERT INTO vector_index_meta(model,dim,updated_at) "
+                    "VALUES(?,?,?) ON CONFLICT(model) DO UPDATE SET "
+                    "dim=excluded.dim, updated_at=excluded.updated_at",
+                    (model, dim, datetime.now().isoformat()))
+            return True
+        except Exception:  # noqa: BLE001 索引失败不阻断主流程
+            return False
+
+    def _sync_vec_after_write(self, node_id, dense, model, dim):
+        if self._vec is None or not model:
+            return
+        dim = int(dim)
+        try:
+            if not self._vec_meta(model, dim):
+                self.rebuild_vector_index(model, dim)
+                return
+            vec = self._norm_vec(dense)
+            if vec is None:
+                return
+            table = self._vec_table(model, dim)
+            with self.transaction() as c:
+                c.execute(f"DELETE FROM {table} WHERE node_id=?",
+                          (node_id,))
+                c.execute(f"INSERT INTO {table}(node_id, dense) "
+                          "VALUES(?,?)", (node_id, json.dumps(vec)))
+        except Exception:  # noqa: BLE001 增量失败则整体重建
+            self.rebuild_vector_index(model, dim)
+
+    def search_vectors(self, query_vec, model, dim, k=None):
+        """ANN 余弦检索；索引不可用时返回 None（调用方必须回退 numpy）。"""
+        if self._vec is None or not model:
+            return None
+        dim = int(dim)
+        if not self._vec_meta(model, dim):
+            return None
+        vec = self._norm_vec(query_vec)
+        if vec is None:
+            return None
+        table = self._vec_table(model, dim)
+        limit = int(k) if k is not None else 2 ** 31 - 1
+        try:
+            with self._wlock:
+                rows = self._conn.execute(
+                    f"SELECT node_id, distance FROM {table} "
+                    "WHERE dense MATCH ? AND k = "
+                    f"{limit}", (json.dumps(vec),)).fetchall()
+            return [(r[0], float(r[1])) for r in rows]
+        except Exception:  # noqa: BLE001 查询失败回退 numpy
+            return None
 
     def has_node_vector(self, node_id):
         rows = self.read("SELECT 1 FROM node_vectors WHERE node_id=?",
@@ -273,25 +394,99 @@ class SQLiteStore:
                 "INSERT INTO versions(node_id,version,content,created_at)"
                 " VALUES(?,?,?,?)", (node_id, version, content, at.isoformat()))
 
-    def add_tombstone(self, target_type, target_id, reason, at):
-        with self.transaction() as conn:
-            conn.execute(
-                "INSERT INTO tombstones(target_type,target_id,reason,"
-                "tombstoned_at) VALUES(?,?,?,?)",
-                (target_type, target_id, reason, at.isoformat()))
-            conn.execute("INSERT INTO audit_log(op,target_type,target_id,"
-                         "reason,at) VALUES('tombstone',?,?,?,?)",
-                         (target_type, target_id, reason, at.isoformat()))
+    def add_tombstone(self, target_type, target_id, reason, at, conn=None):
+        sql = ("INSERT INTO tombstones(target_type,target_id,reason,"
+               "tombstoned_at) VALUES(?,?,?,?)",
+               (target_type, target_id, reason, at.isoformat()))
+        audit = ("INSERT INTO audit_log(op,target_type,target_id,reason,at)"
+                 " VALUES('tombstone',?,?,?,?)",
+                 (target_type, target_id, reason, at.isoformat()))
+        if conn is not None:
+            conn.execute(sql[0], sql[1])
+            conn.execute(audit[0], audit[1])
+            return
+        with self.transaction() as c:
+            c.execute(sql[0], sql[1])
+            c.execute(audit[0], audit[1])
 
     # ---------------- 更新 ----------------
-    def update_lifecycle(self, node_id, lifecycle, at=None):
-        with self.transaction() as conn:
-            conn.execute("UPDATE nodes SET lifecycle=? WHERE id=?",
-                         (lifecycle, node_id))
-            conn.execute("INSERT INTO audit_log(op,target_type,target_id,"
-                         "reason,at) VALUES(?,?,?,?,?)",
-                         ("lifecycle", "node", node_id, lifecycle,
-                          (at or datetime.now()).isoformat()))
+    def update_lifecycle(self, node_id, lifecycle, at=None, conn=None):
+        rows = self.read("SELECT lifecycle FROM nodes WHERE id=?", (node_id,))
+        if not rows:
+            raise StorageError("E006 目标不存在")
+        current = rows[0][0]
+        if (current, lifecycle) not in LEGAL_LIFECYCLE:
+            raise ValidationError(
+                f"E001 非法生命周期迁移: {current} -> {lifecycle}")
+        if current == lifecycle:
+            return
+        at = at or datetime.now()
+        update = ("UPDATE nodes SET lifecycle=? WHERE id=?",
+                  (lifecycle, node_id))
+        audit = ("INSERT INTO audit_log(op,target_type,target_id,reason,at)"
+                 " VALUES('lifecycle','node',?,?,?)",
+                 (node_id, lifecycle, at.isoformat()))
+        if conn is not None:
+            conn.execute(update[0], update[1])
+            conn.execute(audit[0], audit[1])
+            return
+        with self.transaction() as c:
+            c.execute(update[0], update[1])
+            c.execute(audit[0], audit[1])
+
+    def update_edge_lifecycle(self, edge_id, lifecycle, at=None, conn=None):
+        at = at or datetime.now()
+        update = ("UPDATE edges SET lifecycle=? WHERE id=?",
+                  (lifecycle, edge_id))
+        audit = ("INSERT INTO audit_log(op,target_type,target_id,reason,at)"
+                 " VALUES('edge_lifecycle','edge',?,?,?)",
+                 (edge_id, lifecycle, at.isoformat()))
+        if conn is not None:
+            conn.execute(update[0], update[1])
+            conn.execute(audit[0], audit[1])
+            return
+        with self.transaction() as c:
+            c.execute(update[0], update[1])
+            c.execute(audit[0], audit[1])
+
+    def rewire_edge(self, edge_id, old_nid, new_nid, conn=None):
+        """实体合并：把边端点从 old_nid 重挂到 new_nid（同事务用 conn）。"""
+        update = (
+            "UPDATE edges SET from_id = CASE WHEN from_id=? THEN ? "
+            "ELSE from_id END, to_id = CASE WHEN to_id=? THEN ? "
+            "ELSE to_id END WHERE id=?",
+            (old_nid, new_nid, old_nid, new_nid, edge_id))
+        audit = (
+            "INSERT INTO audit_log(op,target_type,target_id,reason,meta,at)"
+            " VALUES('entity_merge','edge',?,?,?,?)",
+            (edge_id, "rewire",
+             json.dumps({"old": old_nid, "new": new_nid}, ensure_ascii=False),
+             datetime.now().isoformat()))
+        if conn is not None:
+            conn.execute(update[0], update[1])
+            conn.execute(audit[0], audit[1])
+            return
+        with self.transaction() as c:
+            c.execute(update[0], update[1])
+            c.execute(audit[0], audit[1])
+
+    def rewire_fact(self, fid, old_nid, new_nid, conn=None):
+        """实体合并：把 fact 从 old_nid 重挂到 new_nid（同事务用 conn）。"""
+        update = ("UPDATE facts SET node_id=? WHERE id=? AND node_id=?",
+                  (new_nid, fid, old_nid))
+        audit = (
+            "INSERT INTO audit_log(op,target_type,target_id,reason,meta,at)"
+            " VALUES('entity_merge','fact',?,?,?,?)",
+            (fid, "rewire",
+             json.dumps({"old": old_nid, "new": new_nid}, ensure_ascii=False),
+             datetime.now().isoformat()))
+        if conn is not None:
+            conn.execute(update[0], update[1])
+            conn.execute(audit[0], audit[1])
+            return
+        with self.transaction() as c:
+            c.execute(update[0], update[1])
+            c.execute(audit[0], audit[1])
 
     def update_life_decay(self, node_id, life, last_access):
         with self.transaction() as conn:
@@ -308,12 +503,18 @@ class SQLiteStore:
                 "UPDATE facts SET invalid_at=?, superseded_by=? WHERE id=?",
                 (at.isoformat(), by, fid))
 
-    def tombstone_fact(self, fid, at):
-        with self.transaction() as conn:
+    def tombstone_fact(self, fid, at, conn=None):
+        if conn is not None:
             conn.execute("UPDATE facts SET tombstoned=1 WHERE id=?", (fid,))
             conn.execute("INSERT INTO audit_log(op,target_type,target_id,"
                          "reason,at) VALUES('tombstone','fact',?,?,?)",
                          (fid, "retracted", at.isoformat()))
+            return
+        with self.transaction() as c:
+            c.execute("UPDATE facts SET tombstoned=1 WHERE id=?", (fid,))
+            c.execute("INSERT INTO audit_log(op,target_type,target_id,"
+                      "reason,at) VALUES('tombstone','fact',?,?,?)",
+                      (fid, "retracted", at.isoformat()))
 
     # ---------------- 读取 ----------------
     def fetch_nodes(self):

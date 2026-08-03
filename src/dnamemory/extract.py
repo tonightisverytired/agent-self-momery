@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""LLM 拆解模块（docs/09 C3、docs/11 M2）。
+"""LLM 拆解模块。
 
 Extractor 协议 + DeepSeek 参考实现（OpenAI 兼容，本地优先，凭据由调用层传入
 或从 DEEPSEEK_API_KEY 环境变量读取）+ 确定性兜底实现。

@@ -1,11 +1,14 @@
 # -*- coding: utf-8 -*-
-"""MemorySystem 门面（docs/07 §3，公共 API v1）。"""
+"""MemorySystem 门面（公共 API v1）。"""
 from __future__ import annotations
 
+import difflib
+import json
+import math
 from datetime import datetime
 
 from . import governance
-from .errors import EmbeddingError, ValidationError
+from .errors import EmbeddingError, NotFoundError, ValidationError
 from .models import (ExtractedMemory, MemoryConfig, RecallFilters, RecallQuery,
                      WriteResult)
 from .retrieval import neighbors, recall
@@ -14,13 +17,14 @@ from .store import SQLiteStore
 
 class MemorySystem:
     def __init__(self, path=":memory:", config=None, clock=None,
-                 embedder=None, extractor=None, judge=None):
+                 embedder=None, extractor=None, judge=None, reranker=None):
         self.store = SQLiteStore(path)
         self.config = config or MemoryConfig()
         self.clock = clock or (lambda: datetime.now())
         self.embedder = embedder
         self.extractor = extractor
         self.judge = judge
+        self.reranker = reranker
         self._name2id = {n.name: n.nid for n in self.store.fetch_nodes()}
 
     def _resolve(self, ref):
@@ -28,7 +32,7 @@ class MemorySystem:
             return ref
         nid = self._name2id.get(ref)
         if nid is None:
-            raise ValidationError("E006 目标不存在")
+            raise NotFoundError("E006 目标不存在")
         return nid
 
     # ---------------- 写入 ----------------
@@ -135,6 +139,10 @@ class MemorySystem:
         dropped = []
         embed_queue = []
         local = dict(self._name2id)
+        entity_local = {}
+        for n in self.store.fetch_nodes():
+            if n.node_type == "entity":
+                entity_local[n.name] = n.nid
         with self.store.transaction() as conn:
             meta = meta or {}
             rec = meta.get("recorded_at")
@@ -181,13 +189,27 @@ class MemorySystem:
                         conn=conn)
                     ids.append(nid)
                     local[c.name] = nid
+                    entity_local[c.name] = nid
                     embed_queue.append(
                         (nid, f"{c.name} {c.value or ''}".strip()))
                 elif c.type == "fact":
-                    nid = local.get(c.from_ or c.name)
+                    target = c.from_ or c.name
+                    nid = local.get(target)
+                    fuzzy = None
                     if nid is None:
-                        dropped.append((c.type, f"实体不存在: {c.from_ or c.name}"))
+                        fuzzy = self._fuzzy_entity_id(entity_local, target)
+                        nid = fuzzy
+                    if nid is None:
+                        dropped.append((c.type, f"实体不存在: {target}"))
                         continue
+                    if fuzzy is not None:
+                        conn.execute(
+                            "INSERT INTO audit_log(op,target_type,target_id,"
+                            "reason,meta,at) VALUES(?,?,?,?,?,?)",
+                            ("endpoint_fuzzy_match", "fact", nid, "fuzzy",
+                             json.dumps({"endpoint": target,
+                                         "matched": nid}, ensure_ascii=False),
+                             now.isoformat()))
                     ids.append(self.store.insert_fact(
                         nid, c.key, c.value, c.source, c.confidence,
                         c.ts or now, now,
@@ -195,9 +217,30 @@ class MemorySystem:
                 elif c.type == "edge":
                     frm = local.get(c.from_)
                     to = local.get(c.to)
+                    frm_fuzzy = None
+                    to_fuzzy = None
+                    if frm is None:
+                        frm_fuzzy = self._fuzzy_entity_id(entity_local,
+                                                          c.from_)
+                        frm = frm_fuzzy
+                    if to is None:
+                        to_fuzzy = self._fuzzy_entity_id(entity_local, c.to)
+                        to = to_fuzzy
                     if frm is None or to is None:
-                        dropped.append((c.type, f"端点不存在: {c.from_} -> {c.to}"))
+                        dropped.append(
+                            (c.type, f"端点不存在: {c.from_} -> {c.to}"))
                         continue
+                    if frm_fuzzy is not None or to_fuzzy is not None:
+                        conn.execute(
+                            "INSERT INTO audit_log(op,target_type,target_id,"
+                            "reason,meta,at) VALUES(?,?,?,?,?,?)",
+                            ("endpoint_fuzzy_match", "edge", None, "fuzzy",
+                             json.dumps(
+                                 {"from": c.from_, "to": c.to,
+                                  "from_matched": frm,
+                                  "to_matched": to},
+                                 ensure_ascii=False),
+                             now.isoformat()))
                     ids.append(self.store.insert_edge(
                         frm, to, c.rel, 0.6, c.confidence, c.ts or now, None,
                         now, idempotency_key=c.idempotency_key, conn=conn))
@@ -217,7 +260,7 @@ class MemorySystem:
 
     # ---------------- 检索 ----------------
     def recall(self, query, filters=None, k=8, mode="triple", max_hops=None,
-               tol_days=None, node_types=None):
+               tol_days=None, node_types=None, rerank_top_n=20):
         if filters is None:
             filters = RecallFilters(node_types=tuple(node_types)
                                     if node_types else None)
@@ -227,9 +270,139 @@ class MemorySystem:
                 kinds=filters.kinds, time_range=filters.time_range,
                 include_archived=filters.include_archived,
                 access_labels=filters.access_labels)
-        return recall(self.store, self.config, query, filters, k, mode,
+        hits = recall(self.store, self.config, query, filters, k, mode,
                       self.clock(), embedder=self.embedder,
                       max_hops=max_hops, tol_days=tol_days)
+        return self._maybe_rerank(query, hits, k, rerank_top_n)
+
+    def _maybe_rerank(self, query, hits, k, rerank_top_n):
+        """可选重排：失败/异常一律回退原排序，绝不阻断召回。"""
+        reranker = self.reranker
+        if reranker is None or not query.text or not hits \
+                or rerank_top_n <= k:
+            return hits
+        candidates = hits[:rerank_top_n]
+        try:
+            by_id = {n.nid: n for n in self.store.fetch_nodes()}
+            texts = [by_id[h.node_id].name if h.node_id in by_id else h.name
+                     for h in candidates]
+            scores = reranker.rerank(query.text, texts)
+        except Exception:  # noqa: BLE001 重排失败回退
+            return hits
+        if len(scores) != len(candidates):
+            return hits
+        scored = []
+        for rank, (hit, raw) in enumerate(zip(candidates, scores)):
+            try:
+                score = float(raw)
+            except (TypeError, ValueError):
+                score = float("-inf")
+            if math.isnan(score) or math.isinf(score):
+                score = float("-inf")
+            scored.append((score, rank, hit))
+        scored.sort(key=lambda x: (-x[0], x[1], x[2].node_id))
+        return [item[2] for item in scored[:k]]
+
+    @staticmethod
+    def _fuzzy_entity_id(local, name, threshold=0.88):
+        """写入端点消解：精确匹配失败时按相似度复用既有实体。"""
+        if not name:
+            return None
+        n = str(name).strip()
+        if not n:
+            return None
+        if n in local:
+            return local[n]
+        best = None
+        best_ratio = 0.0
+        for existing in local:
+            ratio = difflib.SequenceMatcher(None, n, existing).ratio()
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best = existing
+        if best is not None and best_ratio >= threshold:
+            return local[best]
+        return None
+
+    def resolve_entities(self, merge_similar=False, min_similarity=0.85):
+        """合并重复实体（默认仅同名）；返回合并数量。
+
+        - 保留最低 id 节点；边/事实重挂；重复节点墓碑 + 审计；
+        - 不同 access_label 的同名实体不合并；
+        - 重挂后出现自边时该边 tombstoned；
+        - 全程单事务，部分失败整体回滚。
+        """
+        def norm(name):
+            return " ".join(str(name).strip().split())
+
+        entities = [n for n in self.store.fetch_nodes()
+                    if n.node_type == "entity"]
+        groups = {}
+        for n in entities:
+            groups.setdefault(norm(n.name), []).append(n)
+
+        if merge_similar:
+            names = list(groups)
+            parent = {name: name for name in names}
+
+            def find(x):
+                while parent[x] != x:
+                    parent[x] = parent[parent[x]]
+                    x = parent[x]
+                return x
+
+            def union(a, b):
+                ra, rb = find(a), find(b)
+                if ra != rb:
+                    parent[rb] = ra
+
+            for i in range(len(names)):
+                for j in range(i + 1, len(names)):
+                    if difflib.SequenceMatcher(
+                            None, names[i], names[j]).ratio() >= min_similarity:
+                        union(names[i], names[j])
+            merged_groups = {}
+            for name in names:
+                root = find(name)
+                merged_groups.setdefault(root, []).extend(groups[name])
+            groups = merged_groups
+
+        now = self.clock()
+        merged = 0
+        with self.store.transaction() as conn:
+            for members in groups.values():
+                if len(members) < 2:
+                    continue
+                members.sort(key=lambda n: n.nid)
+                canonical = members[0]
+                for dup in members[1:]:
+                    if dup.access_label != canonical.access_label:
+                        continue  # 保守：不同敏感级不合并
+                    self._merge_entity(dup, canonical, now, conn)
+                    merged += 1
+        self._name2id = {n.name: n.nid for n in self.store.fetch_nodes()}
+        return merged
+
+    def _merge_entity(self, dup, canonical, now, conn):
+        for e in self.store.fetch_edges():
+            if e.lifecycle != "active":
+                continue
+            if e.from_id == dup.nid or e.to_id == dup.nid:
+                self.store.rewire_edge(e.eid, dup.nid, canonical.nid,
+                                       conn=conn)
+                row = conn.execute(
+                    "SELECT from_id, to_id FROM edges WHERE id=?",
+                    (e.eid,)).fetchone()
+                if row and row[0] == row[1]:
+                    self.store.update_edge_lifecycle(
+                        e.eid, "tombstoned", now, conn=conn)
+        for f in self.store.fetch_facts():
+            if f.node_id == dup.nid and not f.tombstoned:
+                self.store.rewire_fact(f.fid, dup.nid, canonical.nid,
+                                       conn=conn)
+        self.store.update_lifecycle(dup.nid, "tombstoned", now, conn=conn)
+        self.store.add_tombstone("node", dup.nid, "entity_merge", now,
+                                 conn=conn)
 
     def neighbors(self, node_name, rel=None):
         return neighbors(self.store, node_name, rel, self.clock())
@@ -245,6 +418,19 @@ class MemorySystem:
         return [f for f in self.store.fetch_facts()
                 if f.node_id == nid and f.key == key and not f.tombstoned
                 and (f.invalid_at is None or f.invalid_at > now)]
+
+    def fact_history(self, entity_name, key):
+        """事实版本链：同一 (entity, key) 的全部事实，按 valid_at 升序。
+
+        updates_to 收敛链由 facts.superseded_by 表达。
+        """
+        nid = self._name2id.get(entity_name)
+        if nid is None:
+            return []
+        facts = [f for f in self.store.fetch_facts()
+                 if f.node_id == nid and f.key == key]
+        facts.sort(key=lambda f: (f.valid_at, f.fid))
+        return facts
 
     # ---------------- 生命周期 ----------------
     def step_day(self):

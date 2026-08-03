@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""指标与评测（docs/09 C9）。"""
+"""指标与评测。"""
 from __future__ import annotations
 
 import math

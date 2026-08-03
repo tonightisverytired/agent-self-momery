@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Embedder 协议与 bge-m3 参考实现（M3 语义路，docs/09 C4）。
+"""Embedder 协议与 bge-m3 参考实现。
 
 稠密向量用于相似度召回；bge-m3 同时输出词级稀疏权重（lexical_weights），
 写入存储层备用（不做写入校验，best-effort）。

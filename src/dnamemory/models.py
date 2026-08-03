@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""数据模型与配置（docs/09 C1）。"""
+"""数据模型与配置。"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -40,6 +40,7 @@ class MemoryConfig:
     max_hops_default: int = 2
     time_tolerance_days_default: int = 2
     dense_min_sim: float = 0.55
+    sparse_min_sim: float = 0.25
 
     def __post_init__(self):
         if not self.relations:
@@ -52,6 +53,8 @@ class MemoryConfig:
             raise ValidationError("E001 rrf_k 必须 > 0")
         if not (0 <= self.dense_min_sim <= 1):
             raise ValidationError("E002 dense_min_sim 必须在 [0,1]")
+        if not (0 <= self.sparse_min_sim <= 1):
+            raise ValidationError("E002 sparse_min_sim 必须在 [0,1]")
         for st in ("active", "archived", "tombstoned", "deleted"):
             if st not in self.lifecycle_order:
                 raise ValidationError(f"E001 lifecycle_order 缺少 {st}")

@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
-"""三路召回 + 分数加权 RRF + 过滤链（docs/09 C4）。"""
+"""多路召回（时间/图谱/稠密语义/稀疏）+ 分数加权 RRF + 过滤链。"""
 from __future__ import annotations
 
+import math
 import re
 
 from .models import MemoryHit, RecallFilters
@@ -120,6 +121,19 @@ def _dense_path(store, embedder, text, filters, min_sim=0.55):
     qv = qv / qn
     nodes = {n.nid: n for n in store.fetch_nodes()}
     out = {}
+    indexed = None
+    if getattr(store, "_vec", None) is not None and qres.model:
+        indexed = store.search_vectors(qv.tolist(), qres.model, qres.dim,
+                                       k=len(nodes))
+    if indexed is not None:
+        for nid, dist in indexed:
+            node = nodes.get(nid)
+            if node is None or not _access_allowed(node, filters):
+                continue
+            sim = 1.0 - dist
+            if sim >= min_sim:
+                out[nid] = sim * (0.5 + 0.5 * node.value_score)
+        return out
     for nid, dense, _sparse, _model, _dim, _at in store.fetch_node_vectors():
         node = nodes.get(nid)
         if node is None or not _access_allowed(node, filters):
@@ -131,6 +145,45 @@ def _dense_path(store, embedder, text, filters, min_sim=0.55):
         sim = float(qv @ (v / norm))
         if sim >= min_sim:
             # 语义为主、价值为辅：避免低价值但高度相关的事件被完全压掉
+            out[nid] = sim * (0.5 + 0.5 * node.value_score)
+    return out
+
+
+def _sparse_path(store, embedder, text, filters, min_sim=0.25):
+    """bge-m3 稀疏第四路：查询/节点 lexical_weights 余弦相似度。
+
+    embedder 无 sparse 输出或节点 sparse 缺失时跳过（best-effort）。
+    """
+    try:
+        qres = embedder.embed(text)
+        q = qres.sparse or {}
+    except Exception:  # noqa: BLE001 嵌入失败不阻断其他路径
+        return {}
+    if not q:
+        return {}
+    qn = math.sqrt(sum(float(v) * float(v) for v in q.values()))
+    if qn == 0:
+        return {}
+    nodes = {n.nid: n for n in store.fetch_nodes()}
+    out = {}
+    for nid, _dense, sparse, _model, _dim, _at in store.fetch_node_vectors():
+        if not sparse:
+            continue
+        node = nodes.get(nid)
+        if node is None or not _access_allowed(node, filters):
+            continue
+        dot = 0.0
+        dn = 0.0
+        for k, v in sparse.items():
+            v = float(v)
+            dn += v * v
+            qv = q.get(k)
+            if qv is not None:
+                dot += qv * v
+        if dn == 0:
+            continue
+        sim = dot / (qn * math.sqrt(dn))
+        if sim >= min_sim:
             out[nid] = sim * (0.5 + 0.5 * node.value_score)
     return out
 
@@ -159,19 +212,22 @@ def recall(store, config, query, filters, k, mode, now, max_hops=None,
     tol_days = tol_days or config.time_tolerance_days_default
 
     paths = {}
-    if mode in ("time", "dual", "triple") and query.time:
+    if mode in ("time", "dual", "triple", "quad") and query.time:
         t0, tol = query.time
         paths["time"] = _time_path(store, t0, tol or tol_days)
-    if mode in ("graph", "dual", "triple") and query.topic:
+    if mode in ("graph", "dual", "triple", "quad") and query.topic:
         rel = query.relation.rel_type if query.relation else None
         paths["graph"] = _graph_path(store, query.topic, max_hops, rel,
                                      filters, now)
-    if mode in ("semantic", "triple") and query.text:
+    if mode in ("semantic", "triple", "quad") and query.text:
         if embedder is not None:
             paths["semantic"] = _dense_path(store, embedder, query.text,
                                             filters, config.dense_min_sim)
         else:
             paths["semantic"] = _semantic_path(store, query.text, filters)
+    if mode == "quad" and query.text and embedder is not None:
+        paths["sparse"] = _sparse_path(store, embedder, query.text, filters,
+                                       config.sparse_min_sim)
 
     scores = {}
     contrib = {}

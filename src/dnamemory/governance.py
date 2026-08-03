@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
-"""生命周期、矛盾治理、访问控制、反射压缩（docs/09 C5-C8）。"""
+"""生命周期、矛盾治理、访问控制、反射压缩。"""
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from datetime import datetime
 
-from .errors import ValidationError
+from .errors import NotFoundError, ValidationError
 
 
 @dataclass
@@ -46,17 +48,34 @@ def access(store, config, node_id, now):
 def forget(store, config, node_id, reason, force=False, now=None):
     node = next((n for n in store.fetch_nodes() if n.nid == node_id), None)
     if node is None:
-        raise ValidationError("E006 目标不存在")
+        raise NotFoundError("E006 目标不存在")
     if node.protected and not force:
         raise ValidationError("E005 protected 节点需 force=True（合规场景）")
-    store.update_lifecycle(node_id, "tombstoned", now)
-    store.add_tombstone("node", node_id, reason, now)
+    now = now or datetime.now()
+    if node.lifecycle == "deleted":
+        return  # 幂等：deleted 终态不再重复墓碑
+    if force:
+        # 合规删除：deleted 终态 + 关联 fact/edge 级联墓碑，物理数据保留。
+        with store.transaction() as conn:
+            store.update_lifecycle(node_id, "deleted", now, conn=conn)
+            store.add_tombstone("node", node_id, reason, now, conn=conn)
+            for f in store.fetch_facts():
+                if f.node_id == node_id and not f.tombstoned:
+                    store.tombstone_fact(f.fid, now, conn=conn)
+            for e in store.fetch_edges():
+                if e.lifecycle == "active" and (
+                        e.from_id == node_id or e.to_id == node_id):
+                    store.update_edge_lifecycle(e.eid, "tombstoned", now,
+                                                conn=conn)
+    else:
+        store.update_lifecycle(node_id, "tombstoned", now)
+        store.add_tombstone("node", node_id, reason, now)
 
 
 def restore(store, node_id, now=None):
     node = next((n for n in store.fetch_nodes() if n.nid == node_id), None)
     if node is None:
-        raise ValidationError("E006 目标不存在")
+        raise NotFoundError("E006 目标不存在")
     if node.lifecycle == "deleted":
         raise ValidationError("E004 deleted 不可恢复，请重建")
     store.update_lifecycle(node_id, "active", now)
@@ -107,12 +126,15 @@ def reflect_monthly(store, config, year, month, now, extractor=None):
     """确定性规则版月度反射：摘要节点 + summarizes 边 + part_of 簇。"""
     events = [n for n in store.fetch_nodes()
               if n.node_type == "event" and n.lifecycle == "active"
+              and n.kind != "summary"
               and n.ts is not None and n.ts.year == year and n.ts.month == month]
     if not events:
         return None
+    mean_score = sum(n.value_score for n in events) / len(events)
+    label = _max_label(events)
     summary = store.insert_node(
         "event", "summary", f"{year}-{month:02d} 月度摘要", "",
-        now, 0.8, False, "private",
+        now, round(mean_score * 0.8, 4), False, label,
         config.event_defaults.get("core").life,
         config.event_defaults.get("core").decay_rate,
         now, idempotency_key=f"summary:{year}:{month}")
@@ -122,9 +144,58 @@ def reflect_monthly(store, config, year, month, now, extractor=None):
                           idempotency_key=f"sum:{summary}:{e.nid}")
     cluster = store.insert_node(
         "entity", "cluster", f"{year}-{month:02d} 脉络", "",
-        None, 0.6, False, "private",
+        None, 0.6, False, label,
         0.0, 0.0, now, idempotency_key=f"cluster:{year}:{month}")
     store.insert_edge(summary, cluster, "part_of", 0.8, 0.9,
                       now, None, now,
                       idempotency_key=f"po:{summary}:{cluster}")
+    _build_theme_clusters(store, events, summary, year, month, now)
+    for d in resolve_conflicts(store, config, now):
+        store.audit(
+            "fact_convergence", target_type="fact", target_id=d.node_id,
+            reason=d.kind,
+            meta=json.dumps({"fact_key": d.fact_key,
+                             "winner": str(d.winner.value),
+                             "loser": str(d.loser.value)},
+                            ensure_ascii=False),
+            at=now)
     return summary
+
+
+def _max_label(nodes):
+    rank = {"public": 0, "private": 1, "sensitive": 2}
+    return max((n.access_label for n in nodes),
+               key=lambda x: rank.get(x, 0), default="public")
+
+
+def _build_theme_clusters(store, events, summary, year, month, now):
+    """按主题实体建簇：事件 part_of 主题簇，主题簇 part_of 摘要。"""
+    event_ids = {e.nid for e in events}
+    nodes = {n.nid: n for n in store.fetch_nodes()}
+    by_entity = {}
+    for e in store.fetch_edges():
+        if e.lifecycle != "active":
+            continue
+        if e.from_id in event_ids and nodes.get(e.to_id) \
+                and nodes[e.to_id].node_type == "entity" \
+                and nodes[e.to_id].kind != "cluster":
+            by_entity.setdefault(e.to_id, set()).add(e.from_id)
+        if e.to_id in event_ids and nodes.get(e.from_id) \
+                and nodes[e.from_id].node_type == "entity" \
+                and nodes[e.from_id].kind != "cluster":
+            by_entity.setdefault(e.from_id, set()).add(e.to_id)
+    for ent_id, ev_ids in by_entity.items():
+        ent = nodes[ent_id]
+        tlabel = _max_label([ent] + [nodes[i] for i in ev_ids])
+        tcluster = store.insert_node(
+            "entity", "cluster", f"{year}-{month:02d} {ent.name}", "",
+            None, 0.6, False, tlabel,
+            0.0, 0.0, now,
+            idempotency_key=f"tcluster:{year}:{month}:{ent_id}")
+        for ev_id in ev_ids:
+            store.insert_edge(ev_id, tcluster, "part_of", 0.7, 0.8,
+                              nodes[ev_id].ts or now, None, now,
+                              idempotency_key=f"poev:{tcluster}:{ev_id}")
+        store.insert_edge(tcluster, summary, "part_of", 0.8, 0.9,
+                          now, None, now,
+                          idempotency_key=f"pocl:{tcluster}:{summary}")

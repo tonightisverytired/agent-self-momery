@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""异常体系（docs/09 C11）。"""
+"""异常体系。"""
 
 
 class MemoryError(Exception):
@@ -10,7 +10,7 @@ class ValidationError(MemoryError):
     code = "E001"
 
 
-class NotFoundError(MemoryError):
+class NotFoundError(ValidationError):
     code = "E006"
 
 

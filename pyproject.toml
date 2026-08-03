@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dnamemory"
-version = "0.2.0-dev"
+version = "0.3.0"
 description = "长期个人智能体记忆系统：带类型关联边记忆库（可嵌入、可调用、配置在调用层）"
 requires-python = ">=3.10"
 dependencies = ["pydantic>=2.10"]
@@ -17,6 +17,9 @@ pg = ["psycopg[binary]>=3.1"]
 llm = ["requests>=2.31", "pydantic-ai>=2.0"]
 embed = ["FlagEmbedding>=1.2"]
 dev = ["pytest>=8"]
+
+[project.scripts]
+dnamemory = "dnamemory.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
