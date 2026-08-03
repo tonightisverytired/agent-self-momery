@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dnamemory"
+version = "0.2.0-dev"
+description = "长期个人智能体记忆系统：带类型关联边记忆库（可嵌入、可调用、配置在调用层）"
+requires-python = ">=3.10"
+dependencies = ["pydantic>=2.10"]
+
+[project.optional-dependencies]
+vector = ["sqlite-vec>=0.1.6", "numpy>=1.24"]
+server = ["fastapi>=0.110", "uvicorn>=0.29"]
+mcp = ["fastmcp>=1.0"]
+pg = ["psycopg[binary]>=3.1"]
+llm = ["requests>=2.31", "pydantic-ai>=2.0"]
+embed = ["FlagEmbedding>=1.2"]
+dev = ["pytest>=8"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --basetemp=.pytest_tmp"
