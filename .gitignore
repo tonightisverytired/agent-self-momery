@@ -5,6 +5,9 @@ __pycache__/
 .venv/
 simulation/
 *.egg-info/
+*.db
+*.db-shm
+*.db-wal
 data/*.db
 data/*.db-shm
 data/*.db-wal
