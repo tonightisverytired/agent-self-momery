@@ -24,6 +24,15 @@ from dnamemory import MemorySystem, RecallQuery  # noqa: E402
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SNAPSHOT = os.path.join(ROOT, "data", "mvp_memory.db")
 
+
+def _force_utf8():
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:  # noqa: BLE001
+            pass
+
+
 GATES = {
     "dual_recall": 0.95,
     "dual_map": 0.90,
@@ -125,6 +134,7 @@ def build_dataset(mem):
 
 
 def main():
+    _force_utf8()
     parser = argparse.ArgumentParser()
     parser.add_argument("--db", default=SNAPSHOT)
     parser.add_argument("--bge-m3", action="store_true",

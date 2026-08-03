@@ -23,6 +23,14 @@ from dnamemory import MemorySystem, RecallQuery  # noqa: E402
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def _force_utf8():
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:  # noqa: BLE001
+            pass
+
+
 class CachingEmbedder:
     """评测用嵌入缓存：同一查询文本只算一次。"""
 
@@ -102,6 +110,7 @@ def score_item(mem, item, k=5, mode="triple"):
 
 
 def main():
+    _force_utf8()
     parser = argparse.ArgumentParser()
     parser.add_argument("--db", default=None,
                         help="自有库路径（默认使用内嵌语料构建内存库）")

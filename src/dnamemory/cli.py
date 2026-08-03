@@ -16,6 +16,14 @@ from . import MemorySystem, RecallQuery, __version__
 from .errors import MemoryError
 
 
+def _force_utf8():
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def _emit(obj):
     print(json.dumps(obj, ensure_ascii=False, indent=2))
 
@@ -330,6 +338,7 @@ def build_parser():
 
 
 def main(argv=None):
+    _force_utf8()
     parser = build_parser()
     args = parser.parse_args(argv)
     try:

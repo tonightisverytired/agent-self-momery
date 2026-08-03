@@ -8,6 +8,15 @@
 from __future__ import annotations
 
 import argparse
+import sys
+
+
+def _force_utf8():
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:  # noqa: BLE001
+            pass
 
 DDL = """
 CREATE TABLE IF NOT EXISTS nodes (
@@ -109,6 +118,7 @@ CREATE TABLE IF NOT EXISTS vector_index_meta (
 
 
 def main():
+    _force_utf8()
     parser = argparse.ArgumentParser()
     parser.add_argument("--dsn", default=None,
                         help="提供则直接执行 DDL，否则仅打印")
