@@ -20,6 +20,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request  # noqa: E402
 from pydantic import BaseModel, Field  # noqa: E402
 
 from dnamemory import MemorySystem, RecallFilters, RecallQuery  # noqa: E402
+from dnamemory.extract import FallbackExtractor  # noqa: E402
 from dnamemory.errors import (ConflictError, EmbeddingError,  # noqa: E402
                               MemoryError, NotFoundError, StorageError,
                               ValidationError)
@@ -173,12 +174,15 @@ def main():
     parser.add_argument("--token", default=None)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--fallback-extractor", action="store_true",
+                        help="注入确定性兜底抽取器，/write 开箱可测")
     args = parser.parse_args()
     token = args.token or os.environ.get("DNAMEMORY_TOKEN")
     if not token:
         parser.error("需要 --token 或环境变量 DNAMEMORY_TOKEN")
     import uvicorn
-    app = create_app(path=args.path, token=token)
+    extractor = FallbackExtractor() if args.fallback_extractor else None
+    app = create_app(path=args.path, token=token, extractor=extractor)
     uvicorn.run(app, host=args.host, port=args.port)
 
 
