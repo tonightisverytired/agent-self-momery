@@ -17,6 +17,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "..", "src"))
 
 from fastapi import Depends, FastAPI, HTTPException, Request  # noqa: E402
+from fastapi.security import (HTTPAuthorizationCredentials,  # noqa: E402
+                              HTTPBearer)
 from pydantic import BaseModel, Field  # noqa: E402
 
 from dnamemory import MemorySystem, RecallFilters, RecallQuery  # noqa: E402
@@ -94,10 +96,14 @@ def create_app(memory=None, path=":memory:", token=None, embedder=None,
                               reranker=reranker, extractor=extractor)
     app = FastAPI(title="dnamemory-server", version="0.3.0")
     expected_auth = f"Bearer {token}"
+    security = HTTPBearer(auto_error=False)
 
-    def require_auth(request: Request):
-        if not secrets.compare_digest(
-                request.headers.get("Authorization", ""), expected_auth):
+    def require_auth(request: Request,
+                     credentials: HTTPAuthorizationCredentials | None =
+                     Depends(security)):
+        provided = f"Bearer {credentials.credentials}" \
+            if credentials is not None else ""
+        if not secrets.compare_digest(provided, expected_auth):
             raise HTTPException(status_code=401, detail="Unauthorized")
 
     def _query(req: RecallRequest) -> RecallQuery:
