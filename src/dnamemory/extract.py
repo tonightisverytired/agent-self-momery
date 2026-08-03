@@ -205,13 +205,20 @@ class DeepSeekExtractor:
             env_name, api_key = find_deepseek_key()
             if not api_key:
                 raise ValueError("未找到 DEEPSEEK_API_KEY 环境变量中的 API key")
-        try:
-            import requests
-        except ImportError as e:  # pragma: no cover
-            raise ImportError("需要 requests 包：pip install requests") from e
-        self._requests = requests
+        # requests 惰性导入：构造/解析不依赖网络库，仅真实 API 调用时需要。
+        self._requests = None
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
+
+    def _http(self):
+        if self._requests is None:
+            try:
+                import requests
+            except ImportError as e:  # pragma: no cover
+                raise ImportError(
+                    "需要 requests 包：pip install requests") from e
+            self._requests = requests
+        return self._requests
 
     def _context_line(self, meta: dict | None = None) -> str:
         meta = meta or {}
@@ -242,7 +249,7 @@ class DeepSeekExtractor:
                 # 抽取任务只需结构化 JSON，显式关闭 thinking。
                 if self.model.startswith("deepseek-v4"):
                     payload["thinking"] = {"type": self.thinking}
-                resp = self._requests.post(
+                resp = self._http().post(
                     f"{self._base_url}/chat/completions",
                     headers={
                         "Authorization": f"Bearer {self._api_key}",
