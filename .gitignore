@@ -3,6 +3,8 @@ __pycache__/
 .pytest_cache/
 .pytest_tmp/
 .venv/
+simulation/
+*.egg-info/
 data/*.db
 data/*.db-shm
 data/*.db-wal
