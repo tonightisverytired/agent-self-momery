@@ -149,6 +149,18 @@ def _dense_path(store, embedder, text, filters, min_sim=0.55):
     return out
 
 
+def _graph_seeds(store, topics, filters):
+    """图谱路种子发现：access 允许的实体中按 topic 词面匹配（供后端注入用）。"""
+    seeds = []
+    for n in store.fetch_nodes():
+        if n.node_type != "entity" or not _access_allowed(n, filters):
+            continue
+        if any(t.lower() in n.name.lower() or t.lower() in n.description.lower()
+               for t in topics):
+            seeds.append(n.nid)
+    return seeds
+
+
 def _sparse_path(store, embedder, text, filters, min_sim=0.25):
     """bge-m3 稀疏第四路：查询/节点 lexical_weights 余弦相似度。
 
@@ -206,7 +218,8 @@ def neighbors(store, node_name, rel=None, now=None):
 
 
 def recall(store, config, query, filters, k, mode, now, max_hops=None,
-           tol_days=None, embedder=None):
+           tol_days=None, embedder=None, time_backend=None,
+           graph_backend=None):
     filters = filters or RecallFilters()
     max_hops = max_hops or config.max_hops_default
     tol_days = tol_days or config.time_tolerance_days_default
@@ -214,11 +227,20 @@ def recall(store, config, query, filters, k, mode, now, max_hops=None,
     paths = {}
     if mode in ("time", "dual", "triple", "quad") and query.time:
         t0, tol = query.time
-        paths["time"] = _time_path(store, t0, tol or tol_days)
+        tol = tol or tol_days
+        if time_backend is not None:
+            paths["time"] = time_backend.time_window(t0, tol)
+        else:
+            paths["time"] = _time_path(store, t0, tol)
     if mode in ("graph", "dual", "triple", "quad") and query.topic:
         rel = query.relation.rel_type if query.relation else None
-        paths["graph"] = _graph_path(store, query.topic, max_hops, rel,
-                                     filters, now)
+        if graph_backend is not None:
+            seeds = _graph_seeds(store, query.topic, filters)
+            paths["graph"] = (graph_backend.traverse(seeds, max_hops, rel)
+                              if seeds else {})
+        else:
+            paths["graph"] = _graph_path(store, query.topic, max_hops, rel,
+                                         filters, now)
     if mode in ("semantic", "triple", "quad") and query.text:
         if embedder is not None:
             paths["semantic"] = _dense_path(store, embedder, query.text,

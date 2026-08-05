@@ -17,7 +17,8 @@ from .store import SQLiteStore
 
 class MemorySystem:
     def __init__(self, path=":memory:", config=None, clock=None,
-                 embedder=None, extractor=None, judge=None, reranker=None):
+                 embedder=None, extractor=None, judge=None, reranker=None,
+                 time_backend=None, graph_backend=None):
         self.store = SQLiteStore(path)
         self.config = config or MemoryConfig()
         self.clock = clock or (lambda: datetime.now())
@@ -25,6 +26,8 @@ class MemorySystem:
         self.extractor = extractor
         self.judge = judge
         self.reranker = reranker
+        self.time_backend = time_backend
+        self.graph_backend = graph_backend
         self._name2id = {n.name: n.nid for n in self.store.fetch_nodes()}
 
     def _resolve(self, ref):
@@ -272,7 +275,9 @@ class MemorySystem:
                 access_labels=filters.access_labels)
         hits = recall(self.store, self.config, query, filters, k, mode,
                       self.clock(), embedder=self.embedder,
-                      max_hops=max_hops, tol_days=tol_days)
+                      max_hops=max_hops, tol_days=tol_days,
+                      time_backend=self.time_backend,
+                      graph_backend=self.graph_backend)
         return self._maybe_rerank(query, hits, k, rerank_top_n)
 
     def _maybe_rerank(self, query, hits, k, rerank_top_n):
@@ -471,4 +476,8 @@ class MemorySystem:
         return evaluate(self, dataset, k=k, mode=mode)
 
     def close(self):
+        for backend in (self.time_backend, self.graph_backend):
+            close = getattr(backend, "close", None)
+            if close is not None:
+                close()
         self.store.close()
