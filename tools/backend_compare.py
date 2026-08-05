@@ -151,14 +151,14 @@ def load_neo4j(entities, events, edges):
         if ee_rows:
             s.run("UNWIND $rows AS r MATCH (a:Entity {id:r.from_id}) "
                   "MATCH (b:Entity {id:r.to_id}) "
-                  "MERGE (a)-[x:REL {rel:r.rel}]->(b) "
-                  "SET x.weight=r.weight, x.confidence=r.confidence",
+                  "CREATE (a)-[:REL {rel:r.rel, weight:r.weight, "
+                  "confidence:r.confidence}]->(b)",
                   rows=ee_rows)
         if ev_rows:
             s.run("UNWIND $rows AS r MATCH (a:Event {id:r.from_id}) "
                   "MATCH (b:Entity {id:r.to_id}) "
-                  "MERGE (a)-[x:REL {rel:r.rel}]->(b) "
-                  "SET x.weight=r.weight, x.confidence=r.confidence",
+                  "CREATE (a)-[:REL {rel:r.rel, weight:r.weight, "
+                  "confidence:r.confidence}]->(b)",
                   rows=ev_rows)
     return driver
 
