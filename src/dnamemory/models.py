@@ -41,6 +41,7 @@ class MemoryConfig:
     time_tolerance_days_default: int = 2
     dense_min_sim: float = 0.55
     sparse_min_sim: float = 0.25
+    dense_ann_top_k: int = 1000
 
     def __post_init__(self):
         if not self.relations:
@@ -55,6 +56,8 @@ class MemoryConfig:
             raise ValidationError("E002 dense_min_sim 必须在 [0,1]")
         if not (0 <= self.sparse_min_sim <= 1):
             raise ValidationError("E002 sparse_min_sim 必须在 [0,1]")
+        if self.dense_ann_top_k <= 0:
+            raise ValidationError("E001 dense_ann_top_k 必须 > 0")
         for st in ("active", "archived", "tombstoned", "deleted"):
             if st not in self.lifecycle_order:
                 raise ValidationError(f"E001 lifecycle_order 缺少 {st}")

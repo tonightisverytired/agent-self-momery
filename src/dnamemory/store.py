@@ -139,6 +139,9 @@ class SQLiteStore:
             self._vec = sqlite_vec
         except Exception:  # noqa: BLE001 无向量索引时走 numpy 降级
             self._vec = None
+        self._data_version = 0
+        self._adj_cache = None
+        self._adj_key = None
 
     # ---------------- 读写 ----------------
     @contextmanager
@@ -157,6 +160,7 @@ class SQLiteStore:
             try:
                 yield self._conn
                 self._conn.commit()
+                self._data_version += 1
             except Exception:
                 self._conn.rollback()
                 raise
@@ -529,6 +533,23 @@ class SQLiteStore:
         return [Edge(r[0], r[1], r[2], r[3], r[4], r[5], _dt(r[6]), _dt(r[7]),
                      _dt(r[8]), r[10], r[11])
                 for r in rows]
+
+    def adjacency(self, now):
+        """惰性无向邻接表：写入版本或时间变化时自动重建，O(E) 只发生一次。"""
+        key = (self._data_version, now)
+        if self._adj_key != key:
+            adj = {}
+            for e in self.fetch_edges():
+                if e.lifecycle != "active" or (
+                        e.invalid_at and e.invalid_at <= now):
+                    continue
+                adj.setdefault(e.from_id, []).append(
+                    (e.to_id, e.weight, e.confidence, e.rel))
+                adj.setdefault(e.to_id, []).append(
+                    (e.from_id, e.weight, e.confidence, e.rel))
+            self._adj_cache = adj
+            self._adj_key = key
+        return self._adj_cache
 
     def fetch_facts(self):
         rows = self.read("SELECT * FROM facts")

@@ -127,6 +127,7 @@ py tools/eval_longterm.py --bge-m3 --mode quad   # 中文五类能力评测
 | [评估报告：Postgres 与 Neo4j 替换](docs/评估报告-Postgres与Neo4j替换.md) | 时间链/空间链换 Postgres/Neo4j 的对比验证与结论 |
 | [开发计划：可插拔后端](docs/开发计划-可插拔后端.md) | TimeStore/GraphStore 抽象与默认路径零开销的实施计划 |
 | [后端选型](docs/后端选型.md) | 规模/并发/深跳决策表、注入示例、性能数据 |
+| [规模化检索方案](docs/规模化检索方案.md) | 暴力检索治理：ANN top-k、邻接缓存、时间 SQL 预筛与后续路线 |
 
 ## 目录结构
 

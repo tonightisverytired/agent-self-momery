@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import re
+from datetime import datetime, timedelta
 
 from .models import MemoryHit, RecallFilters
 
@@ -27,13 +28,19 @@ def _access_allowed(node, filters):
 
 
 def _time_path(store, t0, tol):
+    """时间路：SQL 索引预筛（窗口放宽 ±(tol+2) 天）+ Python 精确复算。"""
     out = {}
-    for n in store.fetch_nodes():
-        if n.node_type != "event" or n.ts is None:
-            continue
-        diff = abs((n.ts - t0).days)
+    lo = t0 - timedelta(days=tol + 2)
+    hi = t0 + timedelta(days=tol + 2)
+    rows = store.read(
+        "SELECT id, ts FROM nodes WHERE node_type='event' "
+        "AND ts IS NOT NULL AND ts >= ? AND ts <= ? ORDER BY id",
+        (lo.isoformat(), hi.isoformat()))
+    for nid, ts_text in rows:
+        ts = datetime.fromisoformat(ts_text)
+        diff = abs((ts - t0).days)
         if diff <= tol:
-            out[n.nid] = 1.0 / (1.0 + diff)
+            out[nid] = 1.0 / (1.0 + diff)
     return out
 
 
@@ -49,7 +56,7 @@ def _graph_path(store, topics, max_hops, rel_filter, filters, now):
             seeds.append((n.nid, 0))
     if not seeds:
         return {}
-    edges = _active_edges(store, now)
+    adj = store.adjacency(now)
     reach = {}
     frontier = list(seeds)
     visited = set()
@@ -59,29 +66,31 @@ def _graph_path(store, topics, max_hops, rel_filter, filters, now):
             continue
         visited.add(nid)
         reach[nid] = hop
-        for e in edges:
-            if rel_filter and e.rel != rel_filter:
+        for nb, _w, _c, rel in adj.get(nid, ()):
+            if rel_filter and rel != rel_filter:
                 continue
-            if e.from_id == nid and e.to_id not in visited:
-                frontier.append((e.to_id, hop + 1))
-            elif e.to_id == nid and e.from_id not in visited:
-                frontier.append((e.from_id, hop + 1))
+            if nb not in visited:
+                frontier.append((nb, hop + 1))
     out = {}
-    for e in edges:
-        for src, dst in ((e.from_id, e.to_id), (e.to_id, e.from_id)):
-            if src not in reach or dst not in by_id:
+    for src in reach:
+        src_node = by_id.get(src)
+        if src_node is None:
+            continue
+        for dst, w, c, rel in adj.get(src, ()):
+            if rel_filter and rel != rel_filter:
                 continue
-            node = by_id[dst]
+            node = by_id.get(dst)
+            if node is None:
+                continue
             if node.node_type == "event":
-                hop = reach[src]
-                ent = by_id[src]
-                out[dst] = max(out.get(dst, 0.0),
-                               (1.0 / (hop + 1)) * e.weight * e.confidence
-                               * ent.value_score)
-            elif node.node_type == "entity" and dst != src:
-                hop = reach[src]
-                out[dst] = max(out.get(dst, 0.0),
-                               (1.0 / (hop + 1)) * e.weight * e.confidence)
+                score = (1.0 / (reach[src] + 1)) * w * c \
+                    * src_node.value_score
+            elif dst != src:
+                score = (1.0 / (reach[src] + 1)) * w * c
+            else:
+                continue
+            if score > out.get(dst, 0.0):
+                out[dst] = score
     return out
 
 
@@ -101,7 +110,8 @@ def _semantic_path(store, text, filters):
     return out
 
 
-def _dense_path(store, embedder, text, filters, min_sim=0.55):
+def _dense_path(store, embedder, text, filters, min_sim=0.55,
+                ann_top_k=None):
     """真实稠密向量路：query 嵌入后与已存稠密向量做余弦相似度。
 
     numpy 缺失时优雅降级为空（不阻断双路/图谱检索）。
@@ -123,8 +133,9 @@ def _dense_path(store, embedder, text, filters, min_sim=0.55):
     out = {}
     indexed = None
     if getattr(store, "_vec", None) is not None and qres.model:
+        ann_k = min(len(nodes), ann_top_k) if ann_top_k else len(nodes)
         indexed = store.search_vectors(qv.tolist(), qres.model, qres.dim,
-                                       k=len(nodes))
+                                       k=ann_k)
     if indexed is not None:
         for nid, dist in indexed:
             node = nodes.get(nid)
@@ -244,7 +255,10 @@ def recall(store, config, query, filters, k, mode, now, max_hops=None,
     if mode in ("semantic", "triple", "quad") and query.text:
         if embedder is not None:
             paths["semantic"] = _dense_path(store, embedder, query.text,
-                                            filters, config.dense_min_sim)
+                                            filters, config.dense_min_sim,
+                                            ann_top_k=max(
+                                                config.dense_ann_top_k,
+                                                k * 20))
         else:
             paths["semantic"] = _semantic_path(store, query.text, filters)
     if mode == "quad" and query.text and embedder is not None:
@@ -254,7 +268,7 @@ def recall(store, config, query, filters, k, mode, now, max_hops=None,
     scores = {}
     contrib = {}
     for pname, ps in paths.items():
-        ranked = sorted(ps.items(), key=lambda x: -x[1])
+        ranked = sorted(ps.items(), key=lambda x: (-x[1], x[0]))
         for rk, (nid, sc) in enumerate(ranked):
             scores[nid] = scores.get(nid, 0.0) + sc / (config.rrf_k + rk)
             contrib.setdefault(nid, []).append(pname)

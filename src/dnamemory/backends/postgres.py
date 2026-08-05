@@ -55,6 +55,7 @@ class PostgresTimeBackend:
                 FROM nodes
                 WHERE node_type='event' AND ts IS NOT NULL
                   AND ABS(FLOOR(EXTRACT(EPOCH FROM (ts - %s))/86400)) <= %s
+                ORDER BY id
                 """, (t0, t0, int(tol_days))).fetchall()
         except Exception as e:
             raise StorageError(f"E009 Postgres 时间查询失败: {e}") from e
