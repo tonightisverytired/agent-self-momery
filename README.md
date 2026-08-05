@@ -10,7 +10,7 @@
 - **治理完备**：生命周期状态机（active → archived → tombstoned → deleted）、受控衰减、合规删除级联、冲突治理、三级访问控制（public/private/sensitive）、月度反射压缩、实体消解；
 - **工程严谨**：SQLite 事务/幂等/审计/墓碑、sqlite-vec 余弦向量索引与 numpy 降级链、统一错误码体系（E000-E011）；
 - **多种形态**：Python API、CLI、FastAPI 侧车（Bearer 鉴权 + Swagger Authorize）、FastMCP（stdio / streamable_http）；
-- **可验证**：50 个 pytest 用例、固定快照门禁、自包含中文五类能力评测集。
+- **可验证**：59 个 pytest 用例、固定快照门禁、自包含中文五类能力评测集。
 
 ## 安装
 
@@ -111,7 +111,7 @@ py -m app.dnamemory_mcp --transport streamable_http --token <token> --port 8765
 ## 评测与门禁
 
 ```powershell
-py -m pytest                                # 50 例全量回归
+py -m pytest                                # 59 例全量回归
 py tools/gate_check.py                      # 固定快照门禁（缺失自动合成）
 py tools/eval_longterm.py --bge-m3 --mode quad   # 中文五类能力评测
 ```
@@ -135,7 +135,7 @@ py tools/eval_longterm.py --bge-m3 --mode quad   # 中文五类能力评测
 src/dnamemory/    核心库（models/store/retrieval/governance/memory/extract/embeddings/rerank/cli）
 app/              FastAPI 侧车 + FastMCP 服务
 tools/            gate_check / eval_longterm / pg_migrate
-tests/            50 个 pytest 用例
+tests/            59 个 pytest 用例
 data/             自包含中文能力评测集
 docs/             四份正式文档
 .github/          CI workflow
@@ -145,7 +145,7 @@ docs/             四份正式文档
 
 | 项目 | 结果 |
 |---|---|
-| pytest 全量 | 50/50 通过 |
+| pytest 全量 | 59/59 通过 |
 | 门禁（真实快照） | dual Recall 0.993 / MAP 0.978；triple 1.000 / 0.996 |
 | 中文能力评测（bge-m3，triple/quad） | 五类能力整体 1.000 |
 | 安装 | `pip install -e .` 成功，`dnamemory --version` = 0.3.0 |

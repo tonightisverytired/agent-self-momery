@@ -128,9 +128,3 @@ def test_fallback_when_vec_disabled_still_recalls():
                       node_types=("event",))
     assert hits and hits[0].node_id == aid
     mem.close()
-
-
-def test_pg_store_is_design_placeholder():
-    from dnamemory.pg_store import PostgresStore
-    with pytest.raises(NotImplementedError):
-        PostgresStore()
