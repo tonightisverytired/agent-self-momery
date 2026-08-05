@@ -125,6 +125,7 @@ py tools/eval_longterm.py --bge-m3 --mode quad   # 中文五类能力评测
 | [功能清单](docs/功能清单.md) | 全部功能/入口/状态、验证结果、明确不包含项 |
 | [开箱即用手册](docs/开箱即用手册.md) | 安装、CLI/API 快速开始、增强能力启用、评测、FAQ |
 | [评估报告：Postgres 与 Neo4j 替换](docs/评估报告-Postgres与Neo4j替换.md) | 时间链/空间链换 Postgres/Neo4j 的对比验证与结论 |
+| [开发计划：可插拔后端](docs/开发计划-可插拔后端.md) | TimeStore/GraphStore 抽象与默认路径零开销的实施计划 |
 
 ## 目录结构
 
