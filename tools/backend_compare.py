@@ -131,26 +131,35 @@ def load_neo4j(entities, events, edges):
         s.run("CREATE CONSTRAINT event_id IF NOT EXISTS "
               "FOR (n:Event) REQUIRE n.id IS UNIQUE")
         s.run("CREATE INDEX event_ts IF NOT EXISTS FOR (n:Event) ON (n.ts)")
-        s.run("UNWIND $rows AS r MERGE (n:Entity {id:r.id}) SET n.name=r.name",
-              rows=[{"id": e["id"], "name": e["name"]} for e in entities])
+        s.run("UNWIND $rows AS r MERGE (n:Entity {id:r.id}) "
+              "SET n.name=r.name, n.value_score=r.value",
+              rows=[{"id": e["id"], "name": e["name"], "value": 0.7}
+                    for e in entities])
         s.run("UNWIND $rows AS r MERGE (n:Event {id:r.id}) "
-              "SET n.name=r.name, n.ts=r.ts",
+              "SET n.name=r.name, n.value_score=r.value, n.ts=r.ts",
               rows=[{"id": e["id"], "name": e["name"],
+                     "value": e["value"],
                      "ts": int(e["ts"].timestamp() * 1000)} for e in events])
-        ee_rows = [{"from_id": a, "to_id": b, "rel": rel}
-                   for a, b, rel, _w, _c in edges
+        ee_rows = [{"from_id": a, "to_id": b, "rel": rel,
+                    "weight": w, "confidence": c}
+                   for a, b, rel, w, c in edges
                    if a <= n_entities and b <= n_entities]
-        ev_rows = [{"from_id": a, "to_id": b, "rel": rel}
-                   for a, b, rel, _w, _c in edges
+        ev_rows = [{"from_id": a, "to_id": b, "rel": rel,
+                    "weight": w, "confidence": c}
+                   for a, b, rel, w, c in edges
                    if a > n_entities or b > n_entities]
         if ee_rows:
             s.run("UNWIND $rows AS r MATCH (a:Entity {id:r.from_id}) "
                   "MATCH (b:Entity {id:r.to_id}) "
-                  "MERGE (a)-[:REL {rel:r.rel}]->(b)", rows=ee_rows)
+                  "MERGE (a)-[x:REL {rel:r.rel}]->(b) "
+                  "SET x.weight=r.weight, x.confidence=r.confidence",
+                  rows=ee_rows)
         if ev_rows:
             s.run("UNWIND $rows AS r MATCH (a:Event {id:r.from_id}) "
                   "MATCH (b:Entity {id:r.to_id}) "
-                  "MERGE (a)-[:REL {rel:r.rel}]->(b)", rows=ev_rows)
+                  "MERGE (a)-[x:REL {rel:r.rel}]->(b) "
+                  "SET x.weight=r.weight, x.confidence=r.confidence",
+                  rows=ev_rows)
     return driver
 
 
@@ -221,16 +230,16 @@ def bfs_python(conn, seed, max_hops=MAX_HOPS):
     return out & evset
 
 
-def bench_graph_sqlite(conn, seeds):
+def bench_graph_sqlite(conn, seeds, hops=MAX_HOPS):
     lat, results = [], []
     for seed in seeds:
         t0 = time.perf_counter()
-        results.append(bfs_python(conn, seed))
+        results.append(bfs_python(conn, seed, max_hops=hops))
         lat.append((time.perf_counter() - t0) * 1000)
     return lat, results
 
 
-def bench_graph_postgres(conn, seeds):
+def bench_graph_postgres(conn, seeds, hops=MAX_HOPS):
     lat, results = [], []
     for seed in seeds:
         t0 = time.perf_counter()
@@ -246,19 +255,19 @@ def bench_graph_postgres(conn, seeds):
             )
             SELECT DISTINCT id FROM reach
             WHERE hop > 0 AND id IN (SELECT id FROM nodes WHERE node_type='event')
-        """, (seed, MAX_HOPS)).fetchall()
+        """, (seed, hops)).fetchall()
         results.append({r[0] for r in rows})
         lat.append((time.perf_counter() - t0) * 1000)
     return lat, results
 
 
-def bench_graph_neo4j(driver, seeds):
+def bench_graph_neo4j(driver, seeds, hops=MAX_HOPS):
     lat, results = [], []
     with driver.session() as s:
         for seed in seeds:
             t0 = time.perf_counter()
             recs = s.run(
-                "MATCH (s:Entity {id:$seed})-[*1..2]-(ev:Event) "
+                f"MATCH (s:Entity {{id:$seed}})-[*1..{hops}]-(ev:Event) "
                 "RETURN DISTINCT ev.id AS id", seed=seed)
             rows = [r["id"] for r in recs]
             results.append(set(rows))
@@ -283,6 +292,7 @@ def main():
     parser.add_argument("--edges-per-event", type=int, default=3)
     parser.add_argument("--extra-ee", type=int, default=2000)
     parser.add_argument("--queries", type=int, default=20)
+    parser.add_argument("--hops", type=int, default=MAX_HOPS)
     parser.add_argument("--sqlite", default=os.path.join(
         ROOT, ".pytest_tmp", "backend_compare.db"))
     args = parser.parse_args()
@@ -305,7 +315,7 @@ def main():
     report = {
         "scale": {"entities": len(entities), "events": len(events),
                   "edges": len(edges)},
-        "config": {"max_hops": MAX_HOPS, "tol_days": TOL_DAYS,
+        "config": {"max_hops": args.hops, "tol_days": TOL_DAYS,
                    "queries": len(time_queries)},
         "time_chain": {}, "graph_chain": {},
     }
@@ -314,11 +324,11 @@ def main():
     os.makedirs(os.path.dirname(args.sqlite), exist_ok=True)
     conn = load_sqlite(args.sqlite, entities, events, edges)
     bench_time_sqlite(conn, time_queries[:1])
-    bench_graph_sqlite(conn, graph_seeds[:1])
+    bench_graph_sqlite(conn, graph_seeds[:1], hops=args.hops)
     lat, res = bench_time_sqlite(conn, time_queries)
     report["time_chain"]["sqlite"] = stats(lat)
     sqlite_time_sets = res
-    lat, res = bench_graph_sqlite(conn, graph_seeds)
+    lat, res = bench_graph_sqlite(conn, graph_seeds, hops=args.hops)
     report["graph_chain"]["sqlite_python_bfs"] = stats(lat)
     sqlite_graph_sets = res
     conn.close()
@@ -327,11 +337,11 @@ def main():
     import psycopg
     pg = load_postgres(entities, events, edges)
     bench_time_postgres(pg, time_queries[:1])
-    bench_graph_postgres(pg, graph_seeds[:1])
+    bench_graph_postgres(pg, graph_seeds[:1], hops=args.hops)
     lat, res = bench_time_postgres(pg, time_queries)
     report["time_chain"]["postgres"] = stats(lat)
     pg_time_ok = all(a == b for a, b in zip(sqlite_time_sets, res))
-    lat, res = bench_graph_postgres(pg, graph_seeds)
+    lat, res = bench_graph_postgres(pg, graph_seeds, hops=args.hops)
     report["graph_chain"]["postgres_recursive_cte"] = stats(lat)
     pg_graph_ok = all(a == b for a, b in zip(sqlite_graph_sets, res))
     pg.close()
@@ -340,11 +350,11 @@ def main():
     from neo4j import GraphDatabase
     driver = load_neo4j(entities, events, edges)
     bench_time_neo4j(driver, time_queries[:1])
-    bench_graph_neo4j(driver, graph_seeds[:1])
+    bench_graph_neo4j(driver, graph_seeds[:1], hops=args.hops)
     lat, res = bench_time_neo4j(driver, time_queries)
     report["time_chain"]["neo4j"] = stats(lat)
     neo4j_time_ok = all(a == b for a, b in zip(sqlite_time_sets, res))
-    lat, res = bench_graph_neo4j(driver, graph_seeds)
+    lat, res = bench_graph_neo4j(driver, graph_seeds, hops=args.hops)
     report["graph_chain"]["neo4j_cypher"] = stats(lat)
     neo4j_graph_ok = all(a == b for a, b in zip(sqlite_graph_sets, res))
     driver.close()
