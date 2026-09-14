@@ -20,7 +20,8 @@ from pydantic import (BaseModel, ConfigDict, Field,
                       ValidationError as PydanticValidationError,
                       field_validator, model_validator)
 
-from .models import DEFAULT_RELATIONS, ExtractedMemory
+from .models import (BELIEF_POLARITIES, DEFAULT_RELATIONS,
+                     EVIDENCE_SOURCE_TYPES, INTENT_STATUSES, ExtractedMemory)
 
 EVENT_KINDS = frozenset({
     "meeting", "chat", "work", "life", "health", "sport", "entertainment",
@@ -41,21 +42,29 @@ SYSTEM_PROMPT = """你是长期个人智能体的记忆抽取器。把用户提�
 - type=entity: name(人物/项目/地点/事物名), kind(person/project/place/preference/food/pet/media/skill/concept/other), description(一句话描述)
 - type=fact: name=实体名, key=属性名(如 favorite_drink), value=属性值, source(profile/chat/agent), confidence(0-1)
 - type=edge: from_=起点实体名, to=终点实体名, rel(participates/discusses/mentions/prefers/depends_on/occurs_with/similar_to/part_of/precedes/causes/updates_to/contradicts/summarizes/step_of), confidence(0-1)
+- type=belief: name=主体名(观点持有者，如"用户"), proposition=观点命题(如"上海生活成本高"), polarity(positive/negative/neutral), valid_at(观点生效时间，ISO 或空字符串), source, confidence(0-1)
+- type=intent: name=主体名, proposition=意图内容(如"考虑离开上海"), status(active/completed/cancelled/expired/superseded), valid_at(ISO 或空字符串), confidence(0-1)
+- type=evidence: source_type(user_statement/conversation/system_record/external_data/imported_memory/inferred), source_ref=来源引用(对话/消息标识), conversation_id(可选), message_id(可选), content_hash(可选), trust_level(1-5 数字)
 
-完整 JSON 示例（含全部四种类型）：
+完整 JSON 示例（含全部七种类型）：
 {"memories": [
   {"type": "event", "name": "与张总讨论项目A预算", "kind": "meeting", "ts": "2026-08-03T10:30:00", "value_score": 0.7},
   {"type": "entity", "name": "张总", "kind": "person", "description": "项目负责人"},
   {"type": "fact", "name": "咖啡", "key": "favorite_drink", "value": "拿铁", "source": "chat", "confidence": 0.8},
-  {"type": "edge", "from_": "张总", "to": "项目A", "rel": "participates", "confidence": 0.9}
+  {"type": "edge", "from_": "张总", "to": "项目A", "rel": "participates", "confidence": 0.9},
+  {"type": "belief", "name": "用户", "proposition": "上海生活成本高", "polarity": "negative", "valid_at": "2026-01-05", "source": "chat", "confidence": 0.8},
+  {"type": "intent", "name": "用户", "proposition": "考虑离开上海", "status": "active", "valid_at": "2026-08-01", "confidence": 0.7},
+  {"type": "evidence", "source_type": "conversation", "source_ref": "msg-2026-08-01-001", "conversation_id": "conv-42", "message_id": "m1", "trust_level": 5}
 ]}
 
 硬性要求：
 1. fact 必须同时给出 key 和 value；edge 必须同时给出 from_ 和 to，且 rel 只能是上面的枚举值。
-2. 时间规则：文本明确提到日期/时间才填 ts；未提到时间必须输出空字符串 ""，禁止编造、禁止回填"今天"。
+2. belief/intent 必须给出 proposition；belief 的 polarity 只能是 positive/negative/neutral；intent 的 status 只能是 active/completed/cancelled/expired/superseded。
+3. evidence 的 source_type 只能是 user_statement/conversation/system_record/external_data/imported_memory/inferred 之一。
+4. 时间规则：文本明确提到日期/时间才填 ts/valid_at；未提到时间必须输出空字符串 ""，禁止编造、禁止回填"今天"。
    "今天/明天/昨天/周末/下周一"等相对时间按用户提供的当前真实日期换算成具体日期后再输出。
-3. 每条片段抽取 0-4 条候选，宁缺毋滥。
-4. 实体名要与原文保持一致；同一批内先出现的实体可作为后续 fact/edge 的端点。
+5. 每条片段抽取 0-4 条候选，宁缺毋滥。
+6. 实体名要与原文保持一致；同一批内先出现的实体可作为后续 fact/edge/belief/intent 的端点。
 """
 
 
@@ -104,9 +113,21 @@ class MemoryCandidate(BaseModel):
     to: Optional[str] = None
     key: Optional[str] = None
     value: Optional[object] = None
+    # 0.5.0 状态维度字段（belief/intent/evidence）
+    proposition: Optional[str] = None
+    polarity: Optional[str] = None
+    status: Optional[str] = None
+    source_type: Optional[str] = None
+    source_ref: Optional[str] = None
+    conversation_id: Optional[str] = None
+    message_id: Optional[str] = None
+    content_hash: Optional[str] = None
+    trust_level: Optional[float] = None
+    valid_at: Optional[str] = None
 
     @field_validator("name", "kind", "rel", "from_", "to", "key",
-                     mode="before")
+                     "proposition", "source_ref", "conversation_id",
+                     "message_id", "content_hash", mode="before")
     @classmethod
     def _str_or_none(cls, v):
         if v is None:
@@ -143,6 +164,22 @@ class MemoryCandidate(BaseModel):
                 raise ValueError("edge 缺少 from_/to")
             if self.rel not in DEFAULT_RELATIONS:
                 raise ValueError(f"edge 关系类型非法: {self.rel}")
+        elif t == "belief":
+            if not self.proposition:
+                raise ValueError("belief 缺少 proposition")
+            if self.polarity is not None \
+                    and self.polarity not in BELIEF_POLARITIES:
+                self.polarity = "neutral"
+        elif t == "intent":
+            if not self.proposition:
+                raise ValueError("intent 缺少 proposition")
+            if self.status is not None and self.status not in INTENT_STATUSES:
+                self.status = "active"
+        elif t == "evidence":
+            if not self.source_type:
+                raise ValueError("evidence 缺少 source_type")
+            if self.source_type not in EVIDENCE_SOURCE_TYPES:
+                raise ValueError(f"evidence source_type 非法: {self.source_type}")
         else:
             raise ValueError(f"未知候选类型: {t}")
         return self
@@ -151,6 +188,26 @@ class MemoryCandidate(BaseModel):
         value = self.value
         if self.type == "entity":
             value = self.description or value
+        if self.type in ("belief", "intent"):
+            ts_text = self.valid_at or self.ts
+            return ExtractedMemory(
+                type=self.type,
+                name=self.name or "",
+                ts=_parse_ts(ts_text) if ts_text else None,
+                source=self.source,
+                confidence=self.confidence,
+                proposition=self.proposition,
+                polarity=self.polarity or "neutral",
+                status=self.status or "active")
+        if self.type == "evidence":
+            return ExtractedMemory(
+                type=self.type,
+                source_type=self.source_type,
+                source_ref=self.source_ref or "",
+                conversation_id=self.conversation_id,
+                message_id=self.message_id,
+                content_hash=self.content_hash,
+                trust_level=self.trust_level)
         return ExtractedMemory(
             type=self.type,
             name=self.name or "",

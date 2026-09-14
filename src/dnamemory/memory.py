@@ -8,9 +8,11 @@ import math
 from datetime import datetime
 
 from . import governance
-from .errors import EmbeddingError, NotFoundError, ValidationError
-from .models import (ExtractedMemory, MemoryConfig, RecallFilters, RecallQuery,
-                     WriteResult)
+from .errors import (EmbeddingError, EvidenceNotFoundError, NotFoundError,
+                     ValidationError)
+from .models import (BELIEF_POLARITIES, EVIDENCE_SOURCE_TYPES,
+                     INTENT_STATUSES, ExtractedMemory, MemoryConfig,
+                     RecallFilters, RecallQuery, WriteResult)
 from .retrieval import neighbors, recall
 from .store import SQLiteStore
 
@@ -154,7 +156,26 @@ class MemorySystem:
             elif not isinstance(rec, datetime):
                 rec = self.clock()
             now = rec
+            # 第一遍：evidence 候选先落表，收集本批证据 id 供后续绑定
+            batch_evidence = []
             for c in cands:
+                if c.type != "evidence":
+                    continue
+                try:
+                    self._validate_candidate(c)
+                except ValidationError as e:
+                    dropped.append((c.type, str(e)))
+                    continue
+                eid = self.store.insert_evidence(
+                    c.source_type, c.source_ref or "", c.conversation_id,
+                    c.message_id, c.ts or now, c.content_hash, c.trust_level,
+                    {}, now, idempotency_key=c.idempotency_key, conn=conn)
+                ids.append(eid)
+                batch_evidence.append(eid)
+            # 第二遍：其余候选，evidence_ids 绑定本批证据
+            for c in cands:
+                if c.type == "evidence":
+                    continue
                 try:
                     self._validate_candidate(c)
                     if c.type in ("event", "entity") and not c.name:
@@ -166,6 +187,7 @@ class MemorySystem:
                 except ValidationError as e:
                     dropped.append((c.type, str(e)))
                     continue
+                ev_ids = (c.evidence_ids or []) + batch_evidence
 
                 if c.type == "event":
                     # 未提及时间 → ts 保持 None，不回填"当天时间戳"；
@@ -180,7 +202,8 @@ class MemorySystem:
                         self.config.event_defaults.get(
                             c.kind or "meeting",
                             self.config.event_defaults["transient"]).decay_rate,
-                        now, idempotency_key=c.idempotency_key, conn=conn)
+                        now, evidence_ids=ev_ids,
+                        idempotency_key=c.idempotency_key, conn=conn)
                     ids.append(nid)
                     local[c.name] = nid
                     embed_queue.append((nid, c.name))
@@ -188,8 +211,8 @@ class MemorySystem:
                     nid = self.store.insert_node(
                         "entity", c.kind or "concept", c.name,
                         c.value or "", None, 0.7, c.protected, "public",
-                        0.0, 0.0, now, idempotency_key=c.idempotency_key,
-                        conn=conn)
+                        0.0, 0.0, now, evidence_ids=ev_ids,
+                        idempotency_key=c.idempotency_key, conn=conn)
                     ids.append(nid)
                     local[c.name] = nid
                     entity_local[c.name] = nid
@@ -215,7 +238,7 @@ class MemorySystem:
                              now.isoformat()))
                     ids.append(self.store.insert_fact(
                         nid, c.key, c.value, c.source, c.confidence,
-                        c.ts or now, now,
+                        c.ts or now, now, evidence_ids=ev_ids,
                         idempotency_key=c.idempotency_key, conn=conn))
                 elif c.type == "edge":
                     frm = local.get(c.from_)
@@ -247,19 +270,68 @@ class MemorySystem:
                     ids.append(self.store.insert_edge(
                         frm, to, c.rel, 0.6, c.confidence, c.ts or now, None,
                         now, idempotency_key=c.idempotency_key, conn=conn))
+                elif c.type in ("belief", "intent"):
+                    target = c.name
+                    nid = local.get(target)
+                    fuzzy = None
+                    if nid is None:
+                        fuzzy = self._fuzzy_entity_id(entity_local, target)
+                        nid = fuzzy
+                    if nid is None:
+                        dropped.append((c.type, f"主体不存在: {target}"))
+                        continue
+                    if fuzzy is not None:
+                        conn.execute(
+                            "INSERT INTO audit_log(op,target_type,target_id,"
+                            "reason,meta,at) VALUES(?,?,?,?,?,?)",
+                            ("endpoint_fuzzy_match", c.type, nid, "fuzzy",
+                             json.dumps({"endpoint": target,
+                                         "matched": nid},
+                                        ensure_ascii=False),
+                             now.isoformat()))
+                    if c.type == "belief":
+                        bid = self.store.insert_belief(
+                            nid, c.proposition or c.name,
+                            c.polarity or "neutral", c.confidence, c.source,
+                            c.ts, None, None, "active", "public", ev_ids,
+                            now, idempotency_key=c.idempotency_key, conn=conn)
+                        ids.append(bid)
+                    else:
+                        iid = self.store.insert_intent(
+                            nid, c.proposition or c.name,
+                            c.status or "active", c.confidence, c.source,
+                            c.ts, None, "active", "public", ev_ids,
+                            now, idempotency_key=c.idempotency_key, conn=conn)
+                        ids.append(iid)
         # 刷新名称索引
         self._name2id.update(local)
         self._embed_and_store(embed_queue)
         return ids, dropped
 
     def _validate_candidate(self, c: ExtractedMemory):
-        if c.type not in ("event", "entity", "fact", "edge"):
+        if c.type not in ("event", "entity", "fact", "edge",
+                          "belief", "intent", "evidence"):
             raise ValidationError("E001 未知候选类型")
         if c.type == "edge":
             if c.rel not in self.config.relations:
                 raise ValidationError("E001 未知关系类型")
             if c.from_ is None or c.to is None:
                 raise ValidationError("E001 edge 缺少端点")
+        if c.type in ("belief", "intent"):
+            if not (c.name or c.proposition):
+                raise ValidationError(
+                    f"E001 {c.type} 缺少命题（name 或 proposition）")
+            if c.type == "belief" and c.polarity is not None \
+                    and c.polarity not in BELIEF_POLARITIES:
+                raise ValidationError(f"E001 非法 polarity: {c.polarity}")
+            if c.type == "intent" and c.status is not None \
+                    and c.status not in INTENT_STATUSES:
+                raise ValidationError(f"E001 非法 status: {c.status}")
+        if c.type == "evidence":
+            if not c.source_type \
+                    or c.source_type not in EVIDENCE_SOURCE_TYPES:
+                raise ValidationError(
+                    f"E001 非法 source_type: {c.source_type}")
 
     # ---------------- 检索 ----------------
     def recall(self, query, filters=None, k=8, mode="triple", max_hops=None,
@@ -279,6 +351,103 @@ class MemorySystem:
                       time_backend=self.time_backend,
                       graph_backend=self.graph_backend)
         return self._maybe_rerank(query, hits, k, rerank_top_n)
+
+    def recall_context(self, query, query_type=None, query_time=None,
+                       include_history=False, include_beliefs=True,
+                       include_evidence=True):
+        """0.5.0 记忆 Runtime 入口（设计稿 §7.2/§16.1）。
+
+        召回候选 → 四类扩展 → 状态解析（确定性）→ 时间链 → 证据校验
+        → 跨维度一致性 → 结构化 MemoryContext。`recall()`/`MemoryHit`
+        行为零变化；MemoryScore 分项仅在本管线计算。
+        """
+        from .coherence import CrossDimensionCoherence
+        from .context import ContextBuilder, expand, validate
+        from .models import MemoryScore
+        from .resolve import MemoryStateResolver, query_router
+        from .temporal import TemporalChainBuilder
+
+        qt = query_type or query_router(query.text)
+        now = query_time or self.clock()
+        # 1) 候选召回（既有四路 + 访问控制兜底）
+        hits = self.recall(query, k=40, mode="triple")
+        nodes = {n.nid: n for n in self.store.fetch_nodes()}
+        cand_nodes = [nodes[h.node_id] for h in hits
+                      if h.node_id in nodes]
+        # 2) 候选扩展（Entity/FactVersion/TemporalNeighbor/Evidence）
+        expanded = expand(self.store, cand_nodes, limit=200)
+        # 3) 状态解析（fact/belief/intent 确定性裁决）
+        resolver = MemoryStateResolver(self.store, self.config)
+        state = resolver.resolve(expanded, query_time=now, query_type=qt)
+        # 历史/变化/时间线类查询自动携带历史（设计稿 §13.2）
+        if not include_history and qt not in ("history", "change",
+                                              "why_change", "timeline"):
+            state.historical_facts = []
+        if not include_beliefs:
+            state.beliefs, state.changes = [], []
+        # 4) 时间链
+        builder = TemporalChainBuilder(self.config)
+        flat = state.current_facts + state.historical_facts + state.events
+        chains = builder.build(flat, links=self.store.fetch_memory_links())
+        # 5) 证据校验：inferred 不得以 Fact 身份进 current_state
+        notes = []
+        all_ids = set()
+        for m in flat + state.beliefs + state.intents:
+            for eid in (getattr(m, "evidence_ids", None) or []):
+                all_ids.add(eid)
+        ev_rows = self.store.get_evidence(list(all_ids))
+        by_id = {e.id: e for e in ev_rows}
+        grounded_current = []
+        for f in state.current_facts:
+            evs = [by_id[e] for e in (f.evidence_ids or []) if e in by_id]
+            v = validate(f, evs)
+            if v.inferred:
+                state.historical_facts.append(f)
+                notes.append(
+                    f"fact {f.fid}（{f.key}={f.value}）为推断记忆，"
+                    "已移出当前状态")
+            else:
+                grounded_current.append(f)
+        state.current_facts = grounded_current
+        # 变化类查询：变化链无证据 → abstain 说明（不编造原因，§8 案例 E）
+        if qt in ("why_change", "change"):
+            relevant = state.historical_facts + list(state.events)
+            grounded = any((getattr(m, "evidence_ids", None) or [])
+                           for m in relevant)
+            if relevant and not grounded:
+                notes.append("已确认变化事实；未发现足够证据证明变化原因")
+        if include_evidence:
+            state.evidence = ev_rows
+        # 6) 一致性
+        coherence = CrossDimensionCoherence(self.config)
+        coh = coherence.check(state)
+        # 7) 上下文组装
+        ctx = ContextBuilder(self.config).build(
+            state, query_type=qt, chains=chains, notes=notes)
+        # 8) 分项评分（仅本管线）
+        ctx.score = self._state_score(ctx, coh, hits)
+        return ctx
+
+    def _state_score(self, ctx, coh, hits):
+        from .models import MemoryScore
+        mems = (ctx.current_state + ctx.historical_changes
+                + ctx.beliefs + ctx.intents)
+        retr = (sum(h.score for h in hits) / len(hits)) if hits else 0.0
+        total = len(mems)
+        grounded = sum(1 for m in mems
+                       if getattr(m, "evidence_ids", None))
+        source = sum(
+            self.config.source_rank.get(getattr(m, "source", ""), 0)
+            for m in mems) / (3.0 * max(total, 1))
+        return MemoryScore(
+            retrieval_score=round(retr, 4),
+            temporal_score=1.0 if ctx.temporal_chains else 0.0,
+            validity_score=max(
+                0.0, 1.0 - 0.2 * len(ctx.conflicts)),
+            source_score=round(min(1.0, source), 4),
+            evidence_score=round(grounded / total, 4) if total else 0.0,
+            coherence_score=1.0 if coh.consistent else 0.0,
+            conflict_penalty=float(len(coh.conflicts)))
 
     def _maybe_rerank(self, query, hits, k, rerank_top_n):
         """可选重排：失败/异常一律回退原排序，绝不阻断召回。"""
@@ -436,6 +605,121 @@ class MemorySystem:
                  if f.node_id == nid and f.key == key]
         facts.sort(key=lambda f: (f.valid_at, f.fid))
         return facts
+
+    # ---------------- 记忆历史 / 时间线 / 解释（0.5.0） ----------------
+    def memory_history(self, entity_id, dimension="fact"):
+        """按维度回实体历史（设计稿 §16.2）。
+
+        fact/belief/intent/event 各自按时间序返回完整序列。
+        """
+        nid = self._resolve(entity_id)
+        now = self.clock()
+        if dimension == "fact":
+            facts = [f for f in self.store.fetch_facts()
+                     if f.node_id == nid and not f.tombstoned]
+            facts.sort(key=lambda f: (f.valid_at, f.fid))
+            return facts
+        if dimension in ("belief", "intent"):
+            from .resolve import BeliefResolver, IntentResolver
+            res = (BeliefResolver(self.config) if dimension == "belief"
+                   else IntentResolver(self.config)).resolve(self.store, now)
+            return [m for m in res["history"] + res["current"]
+                    if m.subject_id == nid]
+        if dimension == "event":
+            nodes = {n.nid: n for n in self.store.fetch_nodes()}
+            events = []
+            for e in self.store.fetch_edges():
+                other = None
+                if e.from_id == nid:
+                    other = nodes.get(e.to_id)
+                elif e.to_id == nid:
+                    other = nodes.get(e.from_id)
+                if other is not None and other.node_type == "event":
+                    events.append(other)
+            events.sort(key=lambda n: (n.ts or datetime.min, n.nid))
+            return events
+        raise ValidationError(f"E001 未知维度: {dimension}")
+
+    def timeline(self, entity_id=None, start=None, end=None, kinds=None):
+        """实体时间线：关联事件 + 事实版本，按稳定时间排序成链（§16.3）。"""
+        from .temporal import TemporalChainBuilder
+        nid = self._resolve(entity_id) if entity_id else None
+        items = []
+        nodes = {n.nid: n for n in self.store.fetch_nodes()}
+        if nid is not None:
+            for e in self.store.fetch_edges():
+                other = None
+                if e.from_id == nid:
+                    other = nodes.get(e.to_id)
+                elif e.to_id == nid:
+                    other = nodes.get(e.from_id)
+                if other is not None and other.node_type == "event":
+                    items.append(other)
+            for f in self.store.fetch_facts():
+                if f.node_id == nid and not f.tombstoned:
+                    items.append(f)
+        else:
+            items = [n for n in nodes.values() if n.node_type == "event"]
+        if start or end:
+            kept = []
+            for it in items:
+                t = getattr(it, "ts", None) or getattr(it, "valid_at", None)
+                if t is None:
+                    continue
+                if start and t < start:
+                    continue
+                if end and t > end:
+                    continue
+                kept.append(it)
+            items = kept
+        chains = TemporalChainBuilder(self.config).build(items, links=[])
+        return chains[0].nodes if chains else []
+
+    def explain(self, memory_id, kind=None):
+        """解释一条记忆：Memory + Evidence + Version + Source + Related
+        （设计稿 §16.4）。无证据 → E013。
+
+        kind：node/fact/belief/intent，跨表 id 空间重叠时用于消歧。
+        """
+        target, kind = self._locate_memory(memory_id, kind=kind)
+        eids = getattr(target, "evidence_ids", None) or []
+        if not eids:
+            raise EvidenceNotFoundError(
+                "E013 该记忆没有绑定证据，无法解释来源")
+        evidence = self.store.get_evidence(eids)
+        versions = self.store.fetch_versions(memory_id) if kind == "node" \
+            else []
+        related = []
+        if kind in ("fact", "belief", "intent"):
+            for l in self.store.memory_links_of(memory_id):
+                related.append({"relation": l.relation,
+                                "other_id": l.source_id
+                                if l.target_id == memory_id else l.target_id,
+                                "source_type": l.source_type})
+        return {"memory": target, "evidence": evidence,
+                "versions": versions, "source": getattr(target, "source", ""),
+                "related": related}
+
+    def _locate_memory(self, memory_id, kind=None):
+        if kind not in (None, "node", "fact", "belief", "intent"):
+            raise ValidationError(f"E001 未知 kind: {kind}")
+        if kind in (None, "node"):
+            for n in self.store.fetch_nodes():
+                if n.nid == memory_id:
+                    return n, "node"
+        if kind in (None, "fact"):
+            for f in self.store.fetch_facts():
+                if f.fid == memory_id:
+                    return f, "fact"
+        if kind in (None, "belief"):
+            for b in self.store.fetch_beliefs():
+                if b.id == memory_id:
+                    return b, "belief"
+        if kind in (None, "intent"):
+            for i in self.store.fetch_intents():
+                if i.id == memory_id:
+                    return i, "intent"
+        raise NotFoundError("E006 目标不存在")
 
     # ---------------- 生命周期 ----------------
     def step_day(self):

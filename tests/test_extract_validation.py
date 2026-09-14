@@ -77,3 +77,46 @@ def test_find_deepseek_key_prefers_exact_env(monkeypatch):
     monkeypatch.setenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
     monkeypatch.setenv("DEEPSEEK_LEGACY", "legacy-key")
     assert find_deepseek_key() == ("DEEPSEEK_API_KEY", "exact-key")
+
+
+# ---------------- B-01-T / B-02-T：0.5.0 状态维度候选 ----------------
+def test_prompt_has_state_types():
+    from dnamemory.extract import SYSTEM_PROMPT
+    for kw in ("belief", "intent", "evidence", "polarity", "status",
+               "source_type"):
+        assert kw in SYSTEM_PROMPT
+
+
+def test_state_candidate_validation():
+    ex = DeepSeekExtractor(api_key="test-key")
+    data = {
+        "memories": [
+            {"type": "belief", "proposition": "上海机会多",
+             "polarity": "positive", "confidence": 0.8},
+            {"type": "belief", "polarity": "positive"},          # 缺 proposition
+            {"type": "belief", "proposition": "x",
+             "polarity": "angry"},                                # 降级 neutral
+            {"type": "intent", "proposition": "考虑离开上海",
+             "status": "active"},
+            {"type": "intent", "proposition": "x",
+             "status": "doing"},                                  # 降级 active
+            {"type": "evidence", "source_type": "conversation",
+             "source_ref": "c1"},
+            {"type": "evidence", "source_type": "gossip"},        # rejects
+            {"type": "event", "name": "有效事件", "kind": "meeting"},
+        ]
+    }
+    cands, rejects = ex._parse(data)
+    assert len(cands) == 6
+    assert len(rejects) == 2
+    beliefs = [c for c in cands if c.type == "belief"]
+    assert {b.polarity for b in beliefs} == {"positive", "neutral"}
+    intents = [c for c in cands if c.type == "intent"]
+    assert {i.status for i in intents} == {"active"}
+    evs = [c for c in cands if c.type == "evidence"]
+    assert evs and evs[0].source_ref == "c1"
+    reasons = " | ".join(f"{t}:{r}" for t, r in rejects)
+    assert "belief" in reasons and "proposition" in reasons
+    assert "evidence" in reasons
+    # 同批其它合法候选不受影响
+    assert any(c.type == "event" and c.name == "有效事件" for c in cands)

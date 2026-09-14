@@ -11,7 +11,10 @@ from contextlib import contextmanager
 from datetime import datetime
 
 from .errors import StorageError, ValidationError
-from .models import Edge, Fact, Node, Tombstone
+from .models import (BELIEF_POLARITIES, EVIDENCE_SOURCE_TYPES,
+                     INTENT_STATUSES, MEMORY_LINK_RELATIONS,
+                     Belief, Edge, Evidence, Fact, Intent, MemoryLink, Node,
+                     Tombstone)
 
 LEGAL_LIFECYCLE = frozenset({
     ("active", "active"), ("active", "archived"), ("active", "tombstoned"),
@@ -39,7 +42,9 @@ CREATE TABLE IF NOT EXISTS nodes (
   decay_rate REAL NOT NULL DEFAULT 0,
   last_access TEXT,
   created_at TEXT NOT NULL,
-  idempotency_key TEXT UNIQUE
+  idempotency_key TEXT UNIQUE,
+  evidence_ids TEXT NOT NULL DEFAULT '[]',
+  source TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_nodes_ts ON nodes(ts);
 CREATE INDEX IF NOT EXISTS idx_nodes_life ON nodes(lifecycle);
@@ -73,7 +78,8 @@ CREATE TABLE IF NOT EXISTS facts (
   invalid_at TEXT,
   superseded_by INTEGER,
   tombstoned INTEGER NOT NULL DEFAULT 0,
-  idempotency_key TEXT UNIQUE
+  idempotency_key TEXT UNIQUE,
+  evidence_ids TEXT NOT NULL DEFAULT '[]'
 );
 CREATE INDEX IF NOT EXISTS idx_facts_key ON facts(node_id, fact_key);
 CREATE TABLE IF NOT EXISTS versions (
@@ -112,7 +118,74 @@ CREATE TABLE IF NOT EXISTS vector_index_meta (
   dim INTEGER NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS beliefs (
+  id INTEGER PRIMARY KEY,
+  subject_id INTEGER NOT NULL REFERENCES nodes(id),
+  proposition TEXT NOT NULL,
+  polarity TEXT NOT NULL DEFAULT 'neutral',
+  confidence REAL NOT NULL,
+  source TEXT NOT NULL DEFAULT 'chat',
+  valid_at TEXT,
+  invalid_at TEXT,
+  superseded_by INTEGER,
+  lifecycle TEXT NOT NULL DEFAULT 'active',
+  access_label TEXT NOT NULL DEFAULT 'public',
+  evidence_ids TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL,
+  idempotency_key TEXT UNIQUE
+);
+CREATE INDEX IF NOT EXISTS idx_beliefs_subject ON beliefs(subject_id);
+CREATE TABLE IF NOT EXISTS intents (
+  id INTEGER PRIMARY KEY,
+  subject_id INTEGER NOT NULL REFERENCES nodes(id),
+  proposition TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active',
+  confidence REAL NOT NULL DEFAULT 0.7,
+  source TEXT NOT NULL DEFAULT 'chat',
+  valid_at TEXT,
+  invalid_at TEXT,
+  lifecycle TEXT NOT NULL DEFAULT 'active',
+  access_label TEXT NOT NULL DEFAULT 'public',
+  evidence_ids TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL,
+  idempotency_key TEXT UNIQUE
+);
+CREATE INDEX IF NOT EXISTS idx_intents_subject ON intents(subject_id);
+CREATE TABLE IF NOT EXISTS evidence (
+  id INTEGER PRIMARY KEY,
+  source_type TEXT NOT NULL,
+  source_ref TEXT NOT NULL DEFAULT '',
+  conversation_id TEXT,
+  message_id TEXT,
+  observed_at TEXT,
+  content_hash TEXT,
+  trust_level REAL,
+  metadata TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  idempotency_key TEXT UNIQUE
+);
+CREATE TABLE IF NOT EXISTS memory_links (
+  id INTEGER PRIMARY KEY,
+  source_id INTEGER NOT NULL,
+  target_id INTEGER NOT NULL,
+  source_type TEXT NOT NULL,
+  relation TEXT NOT NULL,
+  confidence REAL NOT NULL DEFAULT 0.7,
+  valid_at TEXT,
+  invalid_at TEXT,
+  idempotency_key TEXT UNIQUE
+);
+CREATE INDEX IF NOT EXISTS idx_memory_links_source ON memory_links(source_id);
+CREATE INDEX IF NOT EXISTS idx_memory_links_target ON memory_links(target_id);
 """
+
+# 0.5.0 向后兼容迁移：旧库缺列补列（幂等；新列追加在表尾，
+# 与新库 DDL 的列顺序保持一致，保证 SELECT * 位置解析一致）。
+_MIGRATIONS = (
+    ("nodes", "evidence_ids", "TEXT NOT NULL DEFAULT '[]'"),
+    ("nodes", "source", "TEXT NOT NULL DEFAULT ''"),
+    ("facts", "evidence_ids", "TEXT NOT NULL DEFAULT '[]'"),
+)
 
 
 def _dt(v):
@@ -130,6 +203,7 @@ class SQLiteStore:
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(DDL)
+        self._migrate_legacy()
         self._conn.commit()
         self._vec = None
         try:
@@ -144,6 +218,18 @@ class SQLiteStore:
         self._adj_key = None
 
     # ---------------- 读写 ----------------
+    def _migrate_legacy(self):
+        """0.5.0 兼容迁移：旧库缺列补列（幂等，重复执行无副作用）。"""
+        for table, col, ddl in _MIGRATIONS:
+            try:
+                cols = {r[1] for r in self._conn.execute(
+                    f"PRAGMA table_info({table})")}
+            except Exception:  # noqa: BLE001 表不存在时跳过
+                continue
+            if col not in cols:
+                self._conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
+
     @contextmanager
     def transaction(self):
         with self._wlock:
@@ -187,7 +273,7 @@ class SQLiteStore:
     # ---------------- 写入 ----------------
     def insert_node(self, node_type, kind, name, description, ts, value_score,
                     protected, access_label, life, decay_rate, created_at,
-                    idempotency_key=None, conn=None):
+                    evidence_ids=None, idempotency_key=None, conn=None):
         if idempotency_key:
             rows = self.read(
                 "SELECT id FROM nodes WHERE idempotency_key=?", (idempotency_key,))
@@ -196,18 +282,21 @@ class SQLiteStore:
         params = (node_type, kind, name, description,
                   ts.isoformat() if ts else None, value_score,
                   int(protected), access_label, life, decay_rate,
-                  created_at.isoformat(), idempotency_key)
+                  created_at.isoformat(), json.dumps(evidence_ids or []),
+                  idempotency_key)
         if conn is not None:
             return conn.execute(
                 "INSERT INTO nodes(node_type,kind,name,description,ts,"
                 "value_score,protected,access_label,life,decay_rate,"
-                "created_at,idempotency_key) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                "created_at,evidence_ids,idempotency_key)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 params).lastrowid
         with self.transaction() as c:
             cur = c.execute(
                 "INSERT INTO nodes(node_type,kind,name,description,ts,"
                 "value_score,protected,access_label,life,decay_rate,"
-                "created_at,idempotency_key) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                "created_at,evidence_ids,idempotency_key)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 params)
             c.execute("INSERT INTO audit_log(op,target_type,target_id,at)"
                       " VALUES('write','node',?,?)",
@@ -237,8 +326,8 @@ class SQLiteStore:
             return cur.lastrowid
 
     def insert_fact(self, node_id, key, value, source, confidence, valid_at,
-                    recorded_at, invalid_at=None, idempotency_key=None,
-                    conn=None):
+                    recorded_at, invalid_at=None, evidence_ids=None,
+                    idempotency_key=None, conn=None):
         if idempotency_key:
             rows = self.read(
                 "SELECT id FROM facts WHERE idempotency_key=?", (idempotency_key,))
@@ -246,17 +335,144 @@ class SQLiteStore:
                 return rows[0][0]
         params = (node_id, key, value, source, confidence,
                   valid_at.isoformat(), recorded_at.isoformat(),
-                  invalid_at.isoformat() if invalid_at else None, idempotency_key)
+                  invalid_at.isoformat() if invalid_at else None,
+                  json.dumps(evidence_ids or []), idempotency_key)
         if conn is not None:
             return conn.execute(
                 "INSERT INTO facts(node_id,fact_key,fact_value,source,confidence,"
-                "valid_at,recorded_at,invalid_at,idempotency_key)"
-                " VALUES(?,?,?,?,?,?,?,?,?)", params).lastrowid
+                "valid_at,recorded_at,invalid_at,evidence_ids,idempotency_key)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?)", params).lastrowid
         with self.transaction() as c:
             cur = c.execute(
                 "INSERT INTO facts(node_id,fact_key,fact_value,source,confidence,"
-                "valid_at,recorded_at,invalid_at,idempotency_key)"
-                " VALUES(?,?,?,?,?,?,?,?,?)", params)
+                "valid_at,recorded_at,invalid_at,evidence_ids,idempotency_key)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?)", params)
+            return cur.lastrowid
+
+    def insert_belief(self, subject_id, proposition, polarity, confidence,
+                      source, valid_at, invalid_at, superseded_by, lifecycle,
+                      access_label, evidence_ids, created_at,
+                      idempotency_key=None, conn=None):
+        if polarity not in BELIEF_POLARITIES:
+            raise ValidationError(f"E001 非法 polarity: {polarity}")
+        if idempotency_key:
+            rows = self.read(
+                "SELECT id FROM beliefs WHERE idempotency_key=?",
+                (idempotency_key,))
+            if rows:
+                return rows[0][0]
+        params = (subject_id, proposition, polarity, confidence, source,
+                  valid_at.isoformat() if valid_at else None,
+                  invalid_at.isoformat() if invalid_at else None,
+                  superseded_by, lifecycle, access_label,
+                  json.dumps(evidence_ids or []),
+                  created_at.isoformat(), idempotency_key)
+        sql = ("INSERT INTO beliefs(subject_id,proposition,polarity,"
+               "confidence,source,valid_at,invalid_at,superseded_by,"
+               "lifecycle,access_label,evidence_ids,created_at,"
+               "idempotency_key) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)")
+        audit = ("INSERT INTO audit_log(op,target_type,target_id,at)"
+                 " VALUES('write_belief','belief',?,?)")
+        if conn is not None:
+            cur = conn.execute(sql, params)
+            conn.execute(audit, (cur.lastrowid, datetime.now().isoformat()))
+            return cur.lastrowid
+        with self.transaction() as c:
+            cur = c.execute(sql, params)
+            c.execute(audit, (cur.lastrowid, datetime.now().isoformat()))
+            return cur.lastrowid
+
+    def insert_intent(self, subject_id, proposition, status, confidence,
+                      source, valid_at, invalid_at, lifecycle, access_label,
+                      evidence_ids, created_at, idempotency_key=None,
+                      conn=None):
+        if status not in INTENT_STATUSES:
+            raise ValidationError(f"E001 非法 status: {status}")
+        if idempotency_key:
+            rows = self.read(
+                "SELECT id FROM intents WHERE idempotency_key=?",
+                (idempotency_key,))
+            if rows:
+                return rows[0][0]
+        params = (subject_id, proposition, status, confidence, source,
+                  valid_at.isoformat() if valid_at else None,
+                  invalid_at.isoformat() if invalid_at else None,
+                  lifecycle, access_label, json.dumps(evidence_ids or []),
+                  created_at.isoformat(), idempotency_key)
+        sql = ("INSERT INTO intents(subject_id,proposition,status,"
+               "confidence,source,valid_at,invalid_at,lifecycle,"
+               "access_label,evidence_ids,created_at,idempotency_key)"
+               " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)")
+        audit = ("INSERT INTO audit_log(op,target_type,target_id,at)"
+                 " VALUES('write_intent','intent',?,?)")
+        if conn is not None:
+            cur = conn.execute(sql, params)
+            conn.execute(audit, (cur.lastrowid, datetime.now().isoformat()))
+            return cur.lastrowid
+        with self.transaction() as c:
+            cur = c.execute(sql, params)
+            c.execute(audit, (cur.lastrowid, datetime.now().isoformat()))
+            return cur.lastrowid
+
+    def insert_evidence(self, source_type, source_ref, conversation_id,
+                        message_id, observed_at, content_hash, trust_level,
+                        metadata, created_at, idempotency_key=None,
+                        conn=None):
+        if source_type not in EVIDENCE_SOURCE_TYPES:
+            raise ValidationError(
+                f"E001 非法 source_type: {source_type}")
+        if idempotency_key:
+            rows = self.read(
+                "SELECT id FROM evidence WHERE idempotency_key=?",
+                (idempotency_key,))
+            if rows:
+                return rows[0][0]
+        params = (source_type, source_ref, conversation_id, message_id,
+                  observed_at.isoformat() if observed_at else None,
+                  content_hash, trust_level,
+                  json.dumps(metadata or {}, ensure_ascii=False),
+                  created_at.isoformat(), idempotency_key)
+        sql = ("INSERT INTO evidence(source_type,source_ref,conversation_id,"
+               "message_id,observed_at,content_hash,trust_level,metadata,"
+               "created_at,idempotency_key) VALUES(?,?,?,?,?,?,?,?,?,?)")
+        audit = ("INSERT INTO audit_log(op,target_type,target_id,at)"
+                 " VALUES('write_evidence','evidence',?,?)")
+        if conn is not None:
+            cur = conn.execute(sql, params)
+            conn.execute(audit, (cur.lastrowid, datetime.now().isoformat()))
+            return cur.lastrowid
+        with self.transaction() as c:
+            cur = c.execute(sql, params)
+            c.execute(audit, (cur.lastrowid, datetime.now().isoformat()))
+            return cur.lastrowid
+
+    def insert_memory_link(self, source_id, target_id, source_type, relation,
+                           confidence, valid_at, invalid_at,
+                           idempotency_key=None, conn=None):
+        if relation not in MEMORY_LINK_RELATIONS:
+            raise ValidationError(f"E001 非法 relation: {relation}")
+        if idempotency_key:
+            rows = self.read(
+                "SELECT id FROM memory_links WHERE idempotency_key=?",
+                (idempotency_key,))
+            if rows:
+                return rows[0][0]
+        params = (source_id, target_id, source_type, relation, confidence,
+                  valid_at.isoformat() if valid_at else None,
+                  invalid_at.isoformat() if invalid_at else None,
+                  idempotency_key)
+        sql = ("INSERT INTO memory_links(source_id,target_id,source_type,"
+               "relation,confidence,valid_at,invalid_at,idempotency_key)"
+               " VALUES(?,?,?,?,?,?,?,?)")
+        audit = ("INSERT INTO audit_log(op,target_type,target_id,at)"
+                 " VALUES('write_memory_link','memory_link',?,?)")
+        if conn is not None:
+            cur = conn.execute(sql, params)
+            conn.execute(audit, (cur.lastrowid, datetime.now().isoformat()))
+            return cur.lastrowid
+        with self.transaction() as c:
+            cur = c.execute(sql, params)
+            c.execute(audit, (cur.lastrowid, datetime.now().isoformat()))
             return cur.lastrowid
 
     def set_node_vectors(self, node_id, dense, sparse=None, model="",
@@ -525,7 +741,9 @@ class SQLiteStore:
         rows = self.read("SELECT * FROM nodes")
         return [Node(r[0], r[1], r[2], r[3], r[4], _dt(r[5]), r[6],
                      bool(r[7]), r[8], r[9], r[10], r[11], _dt(r[12]),
-                     _dt(r[13]))
+                     _dt(r[13]),
+                     json.loads(r[15] or "[]") if len(r) > 15 else [],
+                     r[16] or "" if len(r) > 16 else "")
                 for r in rows]
 
     def fetch_edges(self):
@@ -534,27 +752,74 @@ class SQLiteStore:
                      _dt(r[8]), r[10], r[11])
                 for r in rows]
 
-    def adjacency(self, now):
-        """惰性无向邻接表：写入版本或时间变化时自动重建，O(E) 只发生一次。"""
-        key = (self._data_version, now)
-        if self._adj_key != key:
+    def adjacency(self):
+        """惰性无向邻接表：随数据版本自动重建，O(E) 只发生一次。
+
+        invalid_at 过滤下沉到查询时：边元组末尾携带 invalid_at，
+        由调用方按当前时间过滤，保证缓存跨查询真正命中。
+        """
+        if self._adj_key != self._data_version:
             adj = {}
             for e in self.fetch_edges():
-                if e.lifecycle != "active" or (
-                        e.invalid_at and e.invalid_at <= now):
+                if e.lifecycle != "active":
                     continue
                 adj.setdefault(e.from_id, []).append(
-                    (e.to_id, e.weight, e.confidence, e.rel))
+                    (e.to_id, e.weight, e.confidence, e.rel, e.invalid_at))
                 adj.setdefault(e.to_id, []).append(
-                    (e.from_id, e.weight, e.confidence, e.rel))
+                    (e.from_id, e.weight, e.confidence, e.rel, e.invalid_at))
             self._adj_cache = adj
-            self._adj_key = key
+            self._adj_key = self._data_version
         return self._adj_cache
 
     def fetch_facts(self):
         rows = self.read("SELECT * FROM facts")
         return [Fact(r[0], r[1], r[2], r[3], r[4], r[5], _dt(r[6]), _dt(r[7]),
-                     _dt(r[8]), r[9], bool(r[10]))
+                     _dt(r[8]), r[9], bool(r[10]),
+                     json.loads(r[12] or "[]") if len(r) > 12 else [])
+                for r in rows]
+
+    def fetch_beliefs(self):
+        rows = self.read("SELECT * FROM beliefs")
+        return [Belief(r[0], r[1], r[2], r[3], r[4], r[5], _dt(r[6]),
+                       _dt(r[7]), r[8], r[9], r[10],
+                       json.loads(r[11] or "[]"), _dt(r[12]))
+                for r in rows]
+
+    def fetch_intents(self):
+        rows = self.read("SELECT * FROM intents")
+        return [Intent(r[0], r[1], r[2], r[3], r[4], r[5], _dt(r[6]),
+                       _dt(r[7]), r[8], r[9], json.loads(r[10] or "[]"),
+                       _dt(r[11]))
+                for r in rows]
+
+    def fetch_evidence(self):
+        rows = self.read("SELECT * FROM evidence")
+        return [Evidence(r[0], r[1], r[2], r[3], r[4], _dt(r[5]), r[6],
+                         r[7], json.loads(r[8] or "{}"), _dt(r[9]))
+                for r in rows]
+
+    def get_evidence(self, ids):
+        if not ids:
+            return []
+        marks = ",".join("?" for _ in ids)
+        rows = self.read(f"SELECT * FROM evidence WHERE id IN ({marks})",
+                         tuple(ids))
+        return [Evidence(r[0], r[1], r[2], r[3], r[4], _dt(r[5]), r[6],
+                         r[7], json.loads(r[8] or "{}"), _dt(r[9]))
+                for r in rows]
+
+    def fetch_memory_links(self):
+        rows = self.read("SELECT * FROM memory_links")
+        return [MemoryLink(r[0], r[1], r[2], r[3], r[4], r[5], _dt(r[6]),
+                           _dt(r[7]))
+                for r in rows]
+
+    def memory_links_of(self, memory_id):
+        rows = self.read(
+            "SELECT * FROM memory_links WHERE source_id=? OR target_id=?",
+            (memory_id, memory_id))
+        return [MemoryLink(r[0], r[1], r[2], r[3], r[4], r[5], _dt(r[6]),
+                           _dt(r[7]))
                 for r in rows]
 
     def fetch_versions(self, node_id):

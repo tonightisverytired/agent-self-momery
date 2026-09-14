@@ -184,6 +184,109 @@ def cmd_demo(args):
     return 0
 
 
+def _iso(v):
+    return v.isoformat() if v else None
+
+
+def cmd_history(args):
+    mem = MemorySystem(path=args.db)
+    try:
+        items = mem.memory_history(args.entity, dimension=args.dimension)
+        if args.dimension == "fact":
+            rows = [{"id": f.fid, "key": f.key, "value": f.value,
+                     "source": f.source, "confidence": f.confidence,
+                     "valid_at": _iso(f.valid_at), "invalid_at": _iso(f.invalid_at)}
+                    for f in items]
+        else:
+            rows = [{"id": getattr(m, "id", getattr(m, "nid", None)),
+                     "proposition": getattr(m, "proposition",
+                                            getattr(m, "name", "")),
+                     "polarity": getattr(m, "polarity", None),
+                     "status": getattr(m, "status", None),
+                     "ts": _iso(getattr(m, "ts", None))} for m in items]
+        _emit({"entity": args.entity, "dimension": args.dimension,
+               "items": rows})
+        return 0
+    except (MemoryError, ValueError) as e:
+        return _handle(e)
+    finally:
+        mem.close()
+
+
+def cmd_timeline(args):
+    mem = MemorySystem(path=args.db)
+    try:
+        start = datetime.fromisoformat(args.start) if args.start else None
+        end = datetime.fromisoformat(args.end) if args.end else None
+        nodes = mem.timeline(entity_id=args.entity, start=start, end=end)
+        _emit({"nodes": [
+            {"dimension": n.dimension, "relation": n.relation,
+             "at": _iso(n.at),
+             "id": getattr(n.memory, "nid",
+                           getattr(n.memory, "fid",
+                                   getattr(n.memory, "id", None))),
+             "name": getattr(n.memory, "name",
+                             getattr(n.memory, "value", ""))}
+            for n in nodes]})
+        return 0
+    except (MemoryError, ValueError) as e:
+        return _handle(e)
+    finally:
+        mem.close()
+
+
+def cmd_context(args):
+    mem = MemorySystem(path=args.db)
+    try:
+        t0 = datetime.fromisoformat(args.time) if args.time else None
+        ctx = mem.recall_context(
+            RecallQuery(text=args.text), query_type=args.query_type,
+            query_time=t0)
+        _emit({
+            "query_type": ctx.query_type,
+            "current_state": [
+                {"key": f.key, "value": f.value, "source": f.source,
+                 "valid_at": _iso(f.valid_at)} for f in ctx.current_state],
+            "historical_changes": [
+                {"key": f.key, "value": f.value, "valid_at": _iso(f.valid_at)}
+                for f in ctx.historical_changes],
+            "beliefs": [{"proposition": b.proposition,
+                         "polarity": b.polarity} for b in ctx.beliefs],
+            "intents": [{"proposition": i.proposition, "status": i.status}
+                        for i in ctx.intents],
+            "notes": ctx.notes,
+        })
+        return 0
+    except (MemoryError, ValueError) as e:
+        return _handle(e)
+    finally:
+        mem.close()
+
+
+def cmd_explain(args):
+    mem = MemorySystem(path=args.db)
+    try:
+        target = (int(args.target) if str(args.target).strip().isdigit()
+                  else args.target)
+        ex = mem.explain(target, kind=args.kind)
+        m = ex["memory"]
+        _emit({
+            "memory_id": target,
+            "name": getattr(m, "name", getattr(m, "value", "")),
+            "source": ex["source"],
+            "evidence": [{"id": e.id, "source_type": e.source_type,
+                          "source_ref": e.source_ref} for e in ex["evidence"]],
+            "versions": [{"version": v[0], "content": v[1]}
+                         for v in ex["versions"]],
+            "related": ex["related"],
+        })
+        return 0
+    except (MemoryError, ValueError) as e:
+        return _handle(e)
+    finally:
+        mem.close()
+
+
 def cmd_eval(args):
     queries = args.queries
     if not os.path.exists(queries):
@@ -319,6 +422,34 @@ def build_parser():
     p.add_argument("--year", type=int, required=True)
     p.add_argument("--month", type=int, required=True)
     p.set_defaults(func=cmd_reflect)
+
+    p = sub.add_parser("history", parents=[parent], help="记忆历史（按维度）")
+    p.add_argument("--entity", required=True)
+    p.add_argument("--dimension", default="fact",
+                   choices=("fact", "belief", "intent", "event"))
+    p.set_defaults(func=cmd_history)
+
+    p = sub.add_parser("timeline", parents=[parent], help="实体记忆时间线")
+    p.add_argument("--entity", default=None)
+    p.add_argument("--start", default=None, help="ISO 起始时间")
+    p.add_argument("--end", default=None, help="ISO 结束时间")
+    p.set_defaults(func=cmd_timeline)
+
+    p = sub.add_parser("context", parents=[parent],
+                       help="结构化记忆上下文（状态解析）")
+    p.add_argument("text", help="自然语言查询")
+    p.add_argument("--query-type", default=None,
+                   choices=("current_state", "history", "timeline", "change",
+                            "why_change", "semantic_recall"))
+    p.add_argument("--time", default=None, help="查询时间 ISO")
+    p.set_defaults(func=cmd_context)
+
+    p = sub.add_parser("explain", parents=[parent], help="解释记忆来源")
+    p.add_argument("target", help="记忆 id（node/fact/belief/intent）")
+    p.add_argument("--kind", default=None,
+                   choices=("node", "fact", "belief", "intent"),
+                   help="维度消歧（跨表 id 空间重叠时使用）")
+    p.set_defaults(func=cmd_explain)
 
     p = sub.add_parser("demo", parents=[parent],
                        help="生成确定性演示库（40 事件）")

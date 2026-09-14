@@ -21,11 +21,16 @@ from fastapi.security import (HTTPAuthorizationCredentials,  # noqa: E402
                               HTTPBearer)
 from pydantic import BaseModel, Field  # noqa: E402
 
-from dnamemory import MemorySystem, RecallFilters, RecallQuery  # noqa: E402
+from dnamemory import (MemorySystem, RecallFilters, RecallQuery,  # noqa: E402
+                       __version__)
 from dnamemory.extract import FallbackExtractor  # noqa: E402
-from dnamemory.errors import (ConflictError, EmbeddingError,  # noqa: E402
-                              MemoryError, NotFoundError, StorageError,
-                              ValidationError)
+from dnamemory.errors import (CoherenceConflictError,  # noqa: E402
+                              ConflictError, ContextBuildFailedError,
+                              EmbeddingError, EvidenceNotFoundError,
+                              MemoryError, MemoryStateConflictError,
+                              NotFoundError, StorageError,
+                              TemporalChainInvalidError,
+                              UnsupportedBeliefError, ValidationError)
 from dnamemory.models import RelationFilter  # noqa: E402
 
 
@@ -58,18 +63,76 @@ class ForgetRequest(BaseModel):
     force: bool = False
 
 
+class ContextRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=20000)
+    query_type: Optional[str] = None
+    time: Optional[str] = None
+    include_history: bool = False
+    include_beliefs: bool = True
+    include_evidence: bool = True
+
+
+class TimelineRequest(BaseModel):
+    entity: Optional[str] = None
+    start: Optional[str] = None
+    end: Optional[str] = None
+
+
+def _iso(v):
+    return v.isoformat() if v else None
+
+
+def _fact_dict(f):
+    return {"id": f.fid, "key": f.key, "value": f.value,
+            "source": f.source, "confidence": f.confidence,
+            "valid_at": _iso(f.valid_at), "invalid_at": _iso(f.invalid_at),
+            "evidence_ids": list(f.evidence_ids or [])}
+
+
+def _ctx_dict(ctx):
+    return {
+        "query_type": ctx.query_type,
+        "current_state": [_fact_dict(f) for f in ctx.current_state],
+        "historical_changes": [_fact_dict(f) for f in ctx.historical_changes],
+        "recent_events": [{"id": n.nid, "name": n.name, "ts": _iso(n.ts)}
+                          for n in ctx.recent_events],
+        "beliefs": [{"id": b.id, "proposition": b.proposition,
+                     "polarity": b.polarity} for b in ctx.beliefs],
+        "intents": [{"id": i.id, "proposition": i.proposition,
+                     "status": i.status} for i in ctx.intents],
+        "temporal_chains": [
+            [{"dimension": n.dimension, "relation": n.relation,
+              "at": _iso(n.at),
+              "id": getattr(n.memory, "nid",
+                            getattr(n.memory, "fid",
+                                    getattr(n.memory, "id", None)))}
+             for n in ch.nodes]
+            for ch in ctx.temporal_chains],
+        "evidence": [{"id": e.id, "source_type": e.source_type,
+                      "source_ref": e.source_ref} for e in ctx.evidence],
+        "conflicts": [{"kind": c["kind"], "node_id": c["node_id"],
+                       "key": c["key"]} for c in ctx.conflicts],
+        "notes": list(ctx.notes),
+    }
+
+
 def _status(e: MemoryError) -> int:
     code = getattr(e, "code", "")
-    if code in ("E004", "E006"):
+    if code in ("E004", "E006", "E013"):
         return 404
-    if isinstance(e, NotFoundError):
+    if isinstance(e, NotFoundError) or isinstance(e, EvidenceNotFoundError):
         return 404
-    if isinstance(e, ConflictError):
+    if isinstance(e, ConflictError) or isinstance(e, MemoryStateConflictError):
         return 409
     if isinstance(e, EmbeddingError):
         return 502
     if isinstance(e, StorageError):
         return 503
+    if isinstance(e, (TemporalChainInvalidError, ContextBuildFailedError,
+                      CoherenceConflictError)):
+        return 422
+    if isinstance(e, UnsupportedBeliefError):
+        return 400
     if isinstance(e, ValidationError):
         return 400
     return 500
@@ -94,7 +157,7 @@ def create_app(memory=None, path=":memory:", token=None, embedder=None,
     if memory is None:
         memory = MemorySystem(path=path, embedder=embedder,
                               reranker=reranker, extractor=extractor)
-    app = FastAPI(title="dnamemory-server", version="0.3.0")
+    app = FastAPI(title="dnamemory-server", version=__version__)
     expected_auth = f"Bearer {token}"
     security = HTTPBearer(auto_error=False)
 
@@ -166,6 +229,92 @@ def create_app(memory=None, path=":memory:", token=None, embedder=None,
         try:
             memory.forget(req.target, reason=req.reason, force=req.force)
             return {"ok": True}
+        except MemoryError as e:
+            raise HTTPException(status_code=_status(e),
+                                detail={"code": e.code,
+                                        "message": str(e)})
+
+    @app.post("/context", dependencies=[Depends(require_auth)])
+    def context(req: ContextRequest):
+        try:
+            t0 = None
+            if req.time:
+                try:
+                    t0 = datetime.fromisoformat(req.time)
+                except ValueError as e:
+                    raise HTTPException(
+                        status_code=400,
+                        detail={"code": "E001",
+                                "message": f"时间格式非法: {e}"})
+            ctx = memory.recall_context(
+                RecallQuery(text=req.text), query_type=req.query_type,
+                query_time=t0, include_history=req.include_history,
+                include_beliefs=req.include_beliefs,
+                include_evidence=req.include_evidence)
+            return _ctx_dict(ctx)
+        except MemoryError as e:
+            raise HTTPException(status_code=_status(e),
+                                detail={"code": e.code,
+                                        "message": str(e)})
+
+    @app.post("/timeline", dependencies=[Depends(require_auth)])
+    def timeline(req: TimelineRequest):
+        try:
+            start = datetime.fromisoformat(req.start) if req.start else None
+            end = datetime.fromisoformat(req.end) if req.end else None
+            nodes = memory.timeline(entity_id=req.entity, start=start,
+                                    end=end)
+            return {"nodes": [
+                {"dimension": n.dimension, "relation": n.relation,
+                 "at": _iso(n.at),
+                 "id": getattr(n.memory, "nid",
+                               getattr(n.memory, "fid",
+                                       getattr(n.memory, "id", None))),
+                 "name": getattr(n.memory, "name",
+                                 getattr(n.memory, "value", ""))}
+                for n in nodes]}
+        except MemoryError as e:
+            raise HTTPException(status_code=_status(e),
+                                detail={"code": e.code,
+                                        "message": str(e)})
+
+    @app.get("/memory/{memory_id}/history",
+             dependencies=[Depends(require_auth)])
+    def memory_history(memory_id: int, dimension: str = "fact"):
+        try:
+            items = memory.memory_history(memory_id, dimension=dimension)
+            if dimension in ("fact",):
+                return {"items": [_fact_dict(f) for f in items]}
+            return {"items": [
+                {"id": getattr(m, "id", getattr(m, "nid", None)),
+                 "proposition": getattr(m, "proposition",
+                                        getattr(m, "name", "")),
+                 "polarity": getattr(m, "polarity", None),
+                 "status": getattr(m, "status", None),
+                 "ts": _iso(getattr(m, "ts", None))} for m in items]}
+        except MemoryError as e:
+            raise HTTPException(status_code=_status(e),
+                                detail={"code": e.code,
+                                        "message": str(e)})
+
+    @app.get("/memory/{memory_id}/explain",
+             dependencies=[Depends(require_auth)])
+    def memory_explain(memory_id: int, kind: Optional[str] = None):
+        try:
+            ex = memory.explain(memory_id, kind=kind)
+            m = ex["memory"]
+            return {
+                "memory": {"id": memory_id,
+                           "name": getattr(m, "name",
+                                           getattr(m, "value", "")),
+                           "source": ex["source"],
+                           "evidence_ids": getattr(m, "evidence_ids", [])},
+                "evidence": [{"id": e.id, "source_type": e.source_type,
+                              "source_ref": e.source_ref}
+                             for e in ex["evidence"]],
+                "versions": [{"version": v[0], "content": v[1],
+                              "created_at": v[2]} for v in ex["versions"]],
+                "related": ex["related"]}
         except MemoryError as e:
             raise HTTPException(status_code=_status(e),
                                 detail={"code": e.code,

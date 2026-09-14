@@ -24,3 +24,27 @@ class StorageError(MemoryError):
 
 class EmbeddingError(MemoryError):
     code = "E011"
+
+
+class MemoryStateConflictError(MemoryError):
+    code = "E012"
+
+
+class EvidenceNotFoundError(MemoryError):
+    code = "E013"
+
+
+class TemporalChainInvalidError(MemoryError):
+    code = "E014"
+
+
+class ContextBuildFailedError(MemoryError):
+    code = "E015"
+
+
+class UnsupportedBeliefError(MemoryError):
+    code = "E016"
+
+
+class CoherenceConflictError(MemoryError):
+    code = "E017"

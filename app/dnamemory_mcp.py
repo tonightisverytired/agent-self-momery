@@ -64,6 +64,35 @@ class ForgetInput(BaseModel):
                         description="True=合规删除（deleted 终态+级联）")
 
 
+class ContextInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    text: str = Field(..., min_length=1, max_length=20000,
+                      description="自然语言查询，如 '我现在住哪里'")
+    query_type: Optional[str] = Field(
+        default=None,
+        description="current_state/history/timeline/change/why_change/"
+                    "semantic_recall，缺省按规则路由")
+    time: Optional[str] = Field(default=None,
+                                description="查询时间 ISO，缺省当前时间")
+
+
+class TimelineInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    entity: Optional[str] = Field(default=None, description="实体名称或 id")
+    start: Optional[str] = Field(default=None, description="起始时间 ISO")
+    end: Optional[str] = Field(default=None, description="结束时间 ISO")
+
+
+class ExplainInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    memory_id: int = Field(..., description="记忆 id（node/fact/belief/intent）")
+    kind: Optional[str] = Field(
+        default=None, description="node/fact/belief/intent，跨表 id 消歧")
+
+
 def _err_text(e: MemoryError) -> str:
     hint = {
         "E004": "deleted 节点不可恢复，请重建",
@@ -174,6 +203,86 @@ def create_server(path=":memory:", embedder=None, reranker=None,
                  "winner": str(d.winner.value),
                  "loser": str(d.loser.value)}
                 for d in decisions], ensure_ascii=False)
+        except MemoryError as e:
+            return _err_text(e)
+
+    @mcp.tool(name="dnamemory_context",
+              annotations={"title": "记忆上下文（状态解析）",
+                           "readOnlyHint": True,
+                           "destructiveHint": False,
+                           "idempotentHint": True,
+                           "openWorldHint": False})
+    async def dnamemory_context(params: ContextInput) -> str:
+        """按 query 路由到状态解析管线，返回结构化 MemoryContext JSON。"""
+        try:
+            t0 = datetime.fromisoformat(params.time) if params.time else None
+            ctx = mem.recall_context(
+                RecallQuery(text=params.text), query_type=params.query_type,
+                query_time=t0)
+            return json.dumps({
+                "query_type": ctx.query_type,
+                "current_state": [
+                    {"key": f.key, "value": f.value, "source": f.source,
+                     "valid_at": f.valid_at.isoformat()
+                     if f.valid_at else None}
+                    for f in ctx.current_state],
+                "historical_changes": [
+                    {"key": f.key, "value": f.value,
+                     "valid_at": f.valid_at.isoformat()
+                     if f.valid_at else None}
+                    for f in ctx.historical_changes],
+                "beliefs": [{"proposition": b.proposition,
+                             "polarity": b.polarity} for b in ctx.beliefs],
+                "intents": [{"proposition": i.proposition,
+                             "status": i.status} for i in ctx.intents],
+                "notes": ctx.notes,
+            }, ensure_ascii=False)
+        except MemoryError as e:
+            return _err_text(e)
+
+    @mcp.tool(name="dnamemory_timeline",
+              annotations={"title": "实体时间线",
+                           "readOnlyHint": True,
+                           "destructiveHint": False,
+                           "idempotentHint": True,
+                           "openWorldHint": False})
+    async def dnamemory_timeline(params: TimelineInput) -> str:
+        """按稳定时间排序返回实体记忆时间线 JSON。"""
+        try:
+            start = datetime.fromisoformat(params.start) \
+                if params.start else None
+            end = datetime.fromisoformat(params.end) if params.end else None
+            nodes = mem.timeline(entity_id=params.entity, start=start,
+                                 end=end)
+            return json.dumps({"nodes": [
+                {"dimension": n.dimension, "relation": n.relation,
+                 "at": n.at.isoformat() if n.at else None,
+                 "name": getattr(n.memory, "name",
+                                 getattr(n.memory, "value", ""))}
+                for n in nodes]}, ensure_ascii=False)
+        except MemoryError as e:
+            return _err_text(e)
+
+    @mcp.tool(name="dnamemory_explain",
+              annotations={"title": "解释记忆来源",
+                           "readOnlyHint": True,
+                           "destructiveHint": False,
+                           "idempotentHint": True,
+                           "openWorldHint": False})
+    async def dnamemory_explain(params: ExplainInput) -> str:
+        """返回记忆的证据、版本、来源与关联（无证据返回 E013）。"""
+        try:
+            ex = mem.explain(params.memory_id, kind=params.kind)
+            return json.dumps({
+                "memory_id": params.memory_id,
+                "source": ex["source"],
+                "evidence": [{"id": e.id, "source_type": e.source_type,
+                              "source_ref": e.source_ref}
+                             for e in ex["evidence"]],
+                "versions": [{"version": v[0], "content": v[1]}
+                             for v in ex["versions"]],
+                "related": ex["related"],
+            }, ensure_ascii=False)
         except MemoryError as e:
             return _err_text(e)
 
