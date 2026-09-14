@@ -21,7 +21,7 @@ class ConflictDecision:
 def step_day(store, config, now):
     archived = []
     for n in store.fetch_nodes():
-        if n.lifecycle != "active" or n.protected:
+        if n.lifecycle != "active" or n.protected or n.decay_rate == 0:
             continue
         n.life -= n.decay_rate
         if n.life <= 0:

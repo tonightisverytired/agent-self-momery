@@ -2,11 +2,19 @@
 """规模化检索优化回归：邻接缓存失效、时间路 SQL 预筛、图谱路邻接语义、ANN top-k 边界。"""
 from datetime import datetime, timedelta
 
-from dnamemory import MemorySystem, RecallQuery
+from dnamemory import MemorySystem, RecallFilters, RecallQuery
 from dnamemory.embeddings import EmbeddingResult
 from dnamemory.retrieval import _graph_path, _time_path
 
 START = datetime(2026, 3, 1)
+
+
+class Clock:
+    def __init__(self, t=START):
+        self.now = t
+
+    def __call__(self):
+        return self.now
 
 
 def test_adjacency_cache_invalidates_on_write():
@@ -15,14 +23,51 @@ def test_adjacency_cache_invalidates_on_write():
     e1 = mem.add_event("事件一", START, kind="meeting", value_score=0.6)
     e2 = mem.add_event("事件二", START, kind="meeting", value_score=0.6)
     mem.add_edge(e1, ent, "discusses", 0.7, 0.8, valid_at=START)
-    now = mem.clock()
-    adj1 = mem.store.adjacency(now)
+    adj1 = mem.store.adjacency()
     assert not any(x[0] == e2 for x in adj1.get(e1, []))
     mem.add_edge(e2, ent, "discusses", 0.7, 0.8, valid_at=START)
-    adj2 = mem.store.adjacency(now)
+    adj2 = mem.store.adjacency()
     assert any(x[0] == e1 for x in adj2[ent])
     assert any(x[0] == e2 for x in adj2[ent])
-    assert mem.store.adjacency(now) is adj2  # 版本不变时命中缓存
+    assert mem.store.adjacency() is adj2  # 版本不变时命中缓存
+    mem.close()
+
+
+def test_adjacency_cache_hits_across_clock_advance():
+    """时钟推进不使邻接缓存失效：key 只跟数据版本，invalid_at 查询时过滤。"""
+    clock = Clock()
+    mem = MemorySystem(clock=clock)
+    mem.add_entity("项目A", "project")
+    e1 = mem.add_event("事件一", START, kind="meeting", value_score=0.6)
+    mem.add_edge(e1, "项目A", "discusses", 0.7, 0.8, valid_at=START)
+    adj1 = mem.store.adjacency()
+    key1 = mem.store._adj_key
+    mem.recall(RecallQuery(topic=["项目A"]), mode="graph")
+    clock.now += timedelta(days=1)
+    mem.recall(RecallQuery(topic=["项目A"]), mode="graph")
+    assert mem.store._adj_key == key1
+    assert mem.store.adjacency() is adj1
+    mem.close()
+
+
+def test_graph_path_filters_invalid_at_at_query_time():
+    """invalid_at 过滤下沉到查询时后，语义与构建时过滤逐位一致。"""
+    clock = Clock()
+    mem = MemorySystem(clock=clock)
+    mem.add_entity("项目A", "project")
+    e1 = mem.add_event("事件一", START, kind="meeting", value_score=0.9)
+    mem.add_edge(e1, "项目A", "discusses", 0.8, 0.9, valid_at=START)
+    e2 = mem.add_event("事件二", START, kind="meeting", value_score=0.6)
+    mem.add_edge(e2, "项目A", "discusses", 0.8, 0.9, valid_at=START,
+                 invalid_at=START + timedelta(days=5))
+    filters = RecallFilters()
+    out_before = _graph_path(mem.store, ["项目A"], 2, None, filters, clock())
+    clock.now += timedelta(days=6)
+    out_after = _graph_path(mem.store, ["项目A"], 2, None, filters, clock())
+    assert e2 in out_before
+    assert e2 not in out_after
+    assert abs(out_before[e1] - 0.504) < 1e-9
+    assert abs(out_after[e1] - 0.504) < 1e-9
     mem.close()
 
 

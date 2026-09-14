@@ -56,7 +56,7 @@ def _graph_path(store, topics, max_hops, rel_filter, filters, now):
             seeds.append((n.nid, 0))
     if not seeds:
         return {}
-    adj = store.adjacency(now)
+    adj = store.adjacency()
     reach = {}
     frontier = list(seeds)
     visited = set()
@@ -66,7 +66,9 @@ def _graph_path(store, topics, max_hops, rel_filter, filters, now):
             continue
         visited.add(nid)
         reach[nid] = hop
-        for nb, _w, _c, rel in adj.get(nid, ()):
+        for nb, _w, _c, rel, inv in adj.get(nid, ()):
+            if inv is not None and inv <= now:
+                continue
             if rel_filter and rel != rel_filter:
                 continue
             if nb not in visited:
@@ -76,7 +78,9 @@ def _graph_path(store, topics, max_hops, rel_filter, filters, now):
         src_node = by_id.get(src)
         if src_node is None:
             continue
-        for dst, w, c, rel in adj.get(src, ()):
+        for dst, w, c, rel, inv in adj.get(src, ()):
+            if inv is not None and inv <= now:
+                continue
             if rel_filter and rel != rel_filter:
                 continue
             node = by_id.get(dst)
@@ -212,6 +216,7 @@ def _sparse_path(store, embedder, text, filters, min_sim=0.25):
 
 
 def neighbors(store, node_name, rel=None, now=None):
+    now = now or datetime.now()
     nodes = store.fetch_nodes()
     nid = next((n.nid for n in nodes if n.name == node_name), None)
     if nid is None:
@@ -279,16 +284,23 @@ def recall(store, config, query, filters, k, mode, now, max_hops=None,
         scores = {nid: sc for nid, sc in scores.items() if nid in allowed}
 
     nodes = {n.nid: n for n in store.fetch_nodes()}
-    if filters.node_types:
-        scores = {nid: sc for nid, sc in scores.items()
-                  if nodes[nid].node_type in filters.node_types}
-    if filters.kinds:
-        scores = {nid: sc for nid, sc in scores.items()
-                  if nodes[nid].kind in filters.kinds}
-    if filters.time_range:
-        lo, hi = filters.time_range
-        scores = {nid: sc for nid, sc in scores.items()
-                  if nodes[nid].ts and lo <= nodes[nid].ts <= hi}
+    # 统一过滤：类型/kind/时间范围 + 访问控制兜底（deleted/tombstoned/archived
+    # 与 access_label 对所有路径生效，含后端注入返回的节点 id）。
+    filtered = {}
+    for nid, sc in scores.items():
+        node = nodes.get(nid)
+        if node is None or not _access_allowed(node, filters):
+            continue
+        if filters.node_types and node.node_type not in filters.node_types:
+            continue
+        if filters.kinds and node.kind not in filters.kinds:
+            continue
+        if filters.time_range:
+            lo, hi = filters.time_range
+            if not (node.ts and lo <= node.ts <= hi):
+                continue
+        filtered[nid] = sc
+    scores = filtered
 
     # 并列规则（与模拟基线一致）：分数降序 → 贡献路径优先级
     # (time < graph < semantic) → id 升序；保证回归数值可复刻
