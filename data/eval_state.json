@@ -1,0 +1,83 @@
+{
+  "name": "dnamemory 状态正确性评测集（自包含）",
+  "seed": 42,
+  "corpus": {
+    "entities": [
+      {"name": "用户", "kind": "person"},
+      {"name": "口味", "kind": "preference"}
+    ],
+    "facts": [
+      {"entity": "用户", "key": "city", "value": "北京", "source": "profile",
+       "confidence": 0.9, "valid_at": "2025-01-01", "invalid_at": "2025-08-01"},
+      {"entity": "用户", "key": "city", "value": "南京", "source": "profile",
+       "confidence": 0.9, "valid_at": "2025-08-01", "invalid_at": "2026-07-01"},
+      {"entity": "用户", "key": "city", "value": "上海", "source": "profile",
+       "confidence": 0.9, "valid_at": "2026-07-01"},
+      {"entity": "口味", "key": "偏好", "value": "辣的", "source": "chat",
+       "confidence": 0.9, "valid_at": "2026-01-01"},
+      {"entity": "口味", "key": "偏好", "value": "甜的", "source": "chat",
+       "confidence": 0.9, "valid_at": "2026-01-01"}
+    ],
+    "events": [
+      {"name": "搬到上海", "ts": "2026-07-01", "kind": "life"}
+    ],
+    "beliefs": [
+      {"subject": "用户", "proposition": "上海工作机会多", "polarity": "positive",
+       "valid_at": "2025-01-01"},
+      {"subject": "用户", "proposition": "上海生活成本高", "polarity": "negative",
+       "valid_at": "2026-01-01"},
+      {"subject": "用户", "proposition": "工作机会仍多但不适合长居", "polarity": "neutral",
+       "valid_at": "2026-08-01"}
+    ],
+    "intents": [
+      {"subject": "用户", "proposition": "考虑离开上海", "status": "active",
+       "valid_at": "2026-08-01"}
+    ],
+    "evidence": [
+      {"source_type": "conversation", "source_ref": "conv-1",
+       "observed_at": "2026-07-01"}
+    ]
+  },
+  "items": [
+    {"id": "t1", "ability": "temporal_chain", "query": "我现在住哪里",
+     "expected": {"current_fact": "上海"}},
+    {"id": "t2", "ability": "temporal_chain", "query": "我过去几年住过哪些地方",
+     "expected": {"history": ["北京", "南京"]}},
+    {"id": "t3", "ability": "temporal_chain", "query": "搬到上海 的时间",
+     "expected": {"current_fact": "上海", "event": "搬到上海"}},
+    {"id": "t4", "ability": "temporal_chain", "query": "从北京到上海住过的城市顺序",
+     "expected": {"history": ["北京", "南京"]}},
+    {"id": "b1", "ability": "belief_change", "query": "我对上海的看法发生过什么变化",
+     "expected": {"current_belief": "工作机会仍多但不适合长居"}},
+    {"id": "b2", "ability": "belief_change", "query": "我以前怎么看上海",
+     "expected": {"current_belief": "工作机会仍多但不适合长居"}},
+    {"id": "b3", "ability": "belief_change", "query": "我现在怎么看上海",
+     "expected": {"current_belief": "工作机会仍多但不适合长居"}},
+    {"id": "b4", "ability": "belief_change", "query": "我的观点发生过哪些变化",
+     "expected": {"current_belief": "工作机会仍多但不适合长居"}},
+    {"id": "c1", "ability": "cross_dimension", "query": "我现在的情况",
+     "expected": {"current_fact": "上海", "has_belief": true, "has_intent": true}},
+    {"id": "c2", "ability": "cross_dimension", "query": "我目前的计划和看法",
+     "expected": {"current_fact": "上海", "has_belief": true, "has_intent": true}},
+    {"id": "c3", "ability": "cross_dimension", "query": "我的状态如何",
+     "expected": {"current_fact": "上海", "has_belief": true, "has_intent": true}},
+    {"id": "c4", "ability": "cross_dimension", "query": "现在关于我的一切",
+     "expected": {"current_fact": "上海", "has_belief": true, "has_intent": true}},
+    {"id": "e1", "ability": "evidence_grounding", "query": "我为什么离开南京",
+     "expected": {"abstain": true}},
+    {"id": "e2", "ability": "evidence_grounding", "query": "为什么搬去上海",
+     "expected": {"abstain": true}},
+    {"id": "e3", "ability": "evidence_grounding", "query": "我怎么搬到上海的",
+     "expected": {"abstain": true}},
+    {"id": "e4", "ability": "evidence_grounding", "query": "离开南京的原因是什么",
+     "expected": {"abstain": true}},
+    {"id": "f1", "ability": "fact_conflict", "query": "我喜欢什么口味",
+     "expected": {"has_conflict": true}},
+    {"id": "f2", "ability": "fact_conflict", "query": "我的口味偏好",
+     "expected": {"has_conflict": true}},
+    {"id": "f3", "ability": "fact_conflict", "query": "口味是辣还是甜",
+     "expected": {"has_conflict": true}},
+    {"id": "f4", "ability": "fact_conflict", "query": "我到底喜欢辣的还是甜的",
+     "expected": {"has_conflict": true}}
+  ]
+}

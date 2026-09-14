@@ -14,7 +14,7 @@ import os
 import random
 import sys
 from collections import defaultdict
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "..", "src"))
@@ -23,6 +23,7 @@ from dnamemory import MemorySystem, RecallQuery  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SNAPSHOT = os.path.join(ROOT, "data", "mvp_memory.db")
+STATE_QUERY_TIME = datetime(2026, 9, 1)
 
 
 def _force_utf8():
@@ -133,6 +134,66 @@ def build_dataset(mem):
     return dataset
 
 
+def build_state_memory():
+    """0.5.0 状态正确性合成库（设计稿 §25 Test 01-05，确定性）。"""
+    mem = MemorySystem(path=":memory:")
+    u = mem.add_entity("用户", "person")
+    # Test 01 事实版本：南京 → 上海
+    mem.add_fact(u, "city", "南京", source="profile", confidence=0.9,
+                 valid_at=datetime(2025, 8, 1),
+                 invalid_at=datetime(2026, 7, 1))
+    mem.add_fact(u, "city", "上海", source="profile", confidence=0.9,
+                 valid_at=datetime(2026, 7, 1))
+    # Test 03 观点变化：B1 → B2
+    t1, t2 = datetime(2025, 1, 1), datetime(2026, 1, 1)
+    mem.store.insert_belief(u, "上海工作机会多", "positive", 0.8, "chat",
+                            t1, None, None, "active", "public", [], t1)
+    mem.store.insert_belief(u, "上海生活成本高", "negative", 0.8, "chat",
+                            t2, None, None, "active", "public", [], t2)
+    # Test 04 意图（多维共存）
+    mem.store.insert_intent(u, "考虑离开上海", "active", 0.7, "chat",
+                            t2, None, "active", "public", [], t2)
+    # Test 05 证据不足：搬迁事件无证据
+    ev = mem.add_event("搬到上海", datetime(2026, 7, 1), kind="life")
+    mem.add_edge(ev, u, "discusses", 0.7, 0.8,
+                 valid_at=datetime(2026, 7, 1))
+    return mem
+
+
+def check_state_gates(mem):
+    """§25 Test 01-05 确定性断言：全部通过才算达标。"""
+    checks = {}
+    # Test 01：当前事实 = 上海
+    ctx = mem.recall_context(RecallQuery(text="我现在住哪里"),
+                             query_time=STATE_QUERY_TIME)
+    checks["test01_current_fact"] = \
+        [f.value for f in ctx.current_state] == ["上海"]
+    # Test 02：时间链顺序 南京 → 上海
+    tl = mem.timeline(entity_id=1, start=datetime(2025, 1, 1),
+                      end=STATE_QUERY_TIME)
+    chain_vals = [getattr(n.memory, "value", "") for n in tl]
+    checks["test02_timeline_order"] = \
+        "南京" in chain_vals and "上海" in chain_vals \
+        and chain_vals.index("南京") < chain_vals.index("上海")
+    # Test 03：观点变化链：当前 = 最新观点
+    ctx = mem.recall_context(RecallQuery(text="我对上海的看法发生过什么变化"),
+                             query_time=STATE_QUERY_TIME)
+    checks["test03_belief_current"] = bool(ctx.beliefs) \
+        and ctx.beliefs[0].proposition == "上海生活成本高"
+    # Test 04：Fact + Belief + Intent 多维共存，无冲突
+    ctx = mem.recall_context(RecallQuery(text="我现在的情况"),
+                             query_time=STATE_QUERY_TIME)
+    checks["test04_cross_dimension"] = (
+        [f.value for f in ctx.current_state] == ["上海"]
+        and bool(ctx.beliefs) and bool(ctx.intents)
+        and ctx.conflicts == [])
+    # Test 05：证据不足 → abstain（不编造原因）
+    ctx = mem.recall_context(RecallQuery(text="我为什么离开南京"),
+                             query_time=STATE_QUERY_TIME)
+    checks["test05_abstain"] = any("证据" in n for n in ctx.notes)
+    return checks
+
+
 def main():
     _force_utf8()
     parser = argparse.ArgumentParser()
@@ -195,10 +256,21 @@ def main():
         ok = False
         reasons.append("triple map 低于 dual")
 
+    # 0.5.0 状态正确性门禁（§25 Test 01-05 确定性断言）
+    smem = build_state_memory()
+    state_checks = check_state_gates(smem)
+    smem.close()
+    state_ok = all(state_checks.values())
+    if not state_ok:
+        ok = False
+        failed = [k for k, v in state_checks.items() if not v]
+        reasons.append(f"状态正确性门禁未通过: {failed}")
+
     report = {
         "db": args.db, "snapshot_source": snapshot_source,
         "mode": args.mode, "bge_m3": args.bge_m3,
-        "gates": GATES, "metrics": checks, "ok": ok,
+        "gates": GATES, "metrics": checks, "state": state_checks,
+        "ok": ok,
         "reasons": reasons,
     }
     out = os.path.join(ROOT, "simulation", "gate_result.json")

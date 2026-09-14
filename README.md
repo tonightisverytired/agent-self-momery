@@ -1,16 +1,18 @@
 # dnamemory
 
-长期个人智能体记忆系统：以**带类型关联边的记忆图谱**为核心，提供多路召回、受控遗忘、冲突治理、访问控制与反射压缩的 Python 记忆库。可嵌入智能体、进程内零配置使用，也可通过 FastAPI / MCP 服务化。
+长期个人智能体记忆 **Runtime**：以**带类型关联边的记忆图谱**为核心，提供多路召回、受控遗忘、冲突治理、访问控制、反射压缩，以及 0.5.0 新增的**记忆状态解析**（Fact/Belief/Intent/Evidence 分层）、**时间链**、**证据追溯**与**跨维度一致性**的 Python 记忆库。可嵌入智能体、进程内零配置使用，也可通过 FastAPI / MCP 服务化。
 
-> 版本：0.3.0｜Python ≥ 3.10｜正式版（MVP 验证阶段已归档清理）
+> 版本：0.5.0｜Python ≥ 3.10｜设计依据：[业务改造](docs/业务改造.md)、[改造系统设计与架构设计](docs/改造系统设计与架构设计.md)
 
 ## 核心能力
 
 - **多路召回**：时间路 + 图谱路 + 稠密语义路（bge-m3）+ 稀疏路，支持 `dual / triple / quad` 模式与 RRF 融合，可选 reranker 重排；
-- **治理完备**：生命周期状态机（active → archived → tombstoned → deleted）、受控衰减、合规删除级联、冲突治理、三级访问控制（public/private/sensitive）、月度反射压缩、实体消解；
-- **工程严谨**：SQLite 事务/幂等/审计/墓碑、sqlite-vec 余弦向量索引与 numpy 降级链、统一错误码体系（E000-E011）；
-- **多种形态**：Python API、CLI、FastAPI 侧车（Bearer 鉴权 + Swagger Authorize）、FastMCP（stdio / streamable_http）；
-- **可验证**：59 个 pytest 用例、固定快照门禁、自包含中文五类能力评测集。
+- **记忆 Runtime（0.5.0）**：`recall_context()` 管线（候选扩展 → 状态解析 → 时间链 → 证据校验 → 一致性 → 结构化上下文）；确定性 QueryRouter（当前/历史/时间线/变化意图）；当前事实由规则裁决（`superseded_by`/来源可信级/置信度/新鲜度），不依赖 LLM 与向量相似度；
+- **六类记忆对象**：Event / Entity / Fact / Belief / Intent / Evidence；Belief 观点演化链不覆盖历史；Intent 独立状态机（active/completed/cancelled/expired/superseded）；Evidence 可追溯（inferred 强制标注推断，不得伪装为事实）；
+- **治理完备**：生命周期状态机（active → archived → tombstoned → deleted）、受控衰减、合规删除级联、冲突治理（Hard/Temporal/Source/Soft 四类）、三级访问控制（public/private/sensitive，全路径统一兜底）、月度反射压缩、实体消解；
+- **工程严谨**：SQLite 事务/幂等/审计/墓碑、sqlite-vec 余弦向量索引与 numpy 降级链、统一错误码体系（E000-E017）、0.4.0 旧库自动迁移（幂等补列建表）；
+- **多种形态**：Python API、CLI（新增 history/timeline/context/explain）、FastAPI 侧车（新增 /context、/timeline、/memory/{id}/history、/memory/{id}/explain）、FastMCP（新增 context/timeline/explain 工具）；
+- **可验证**：全量 pytest、双门禁（快照召回 + 状态正确性）、中文五类能力评测集与状态正确性评测集。
 
 ## 安装
 
@@ -85,6 +87,30 @@ hits = mem.recall(RecallQuery(text="经费开支"), k=5, mode="quad")
 - 写入**新节点**时自动生成 1024 维稠密向量 + 词级稀疏权重（批量写入按批调用）；幂等重复写入不重复嵌入；查询时每次嵌入一次查询文本；
 - **旧数据不自动回填**：在 embedder 注入前写入的节点没有向量，语义路会跳过它们，需要用带 embedder 的进程回填后再检索。
 
+### 5. 记忆 Runtime（0.5.0）：状态解析与时间链
+
+```python
+# 事实版本 + 观点演化 + 意图
+mem.add_fact("用户", "city", "南京", source="profile", confidence=0.9,
+             valid_at=datetime(2025, 8, 1), invalid_at=datetime(2026, 7, 1))
+mem.add_fact("用户", "city", "上海", source="profile", confidence=0.9,
+             valid_at=datetime(2026, 7, 1))
+
+ctx = mem.recall_context(RecallQuery(text="我现在住哪里"),
+                         query_time=datetime(2026, 9, 1))
+print(ctx.query_type)                       # current_state
+print([f.value for f in ctx.current_state])  # ['上海']
+
+# 时间线 / 历史 / 解释
+mem.timeline(entity_id="用户", start=datetime(2025, 1, 1))
+mem.memory_history("用户", dimension="fact")
+mem.explain(2, kind="fact")  # 返回 Memory+Evidence+Version+Source+Related
+```
+
+- QueryRouter 纯规则路由（当前/以前/什么时候/为什么变…），无 LLM 可运行；
+- 当前事实由确定性裁决（写入端固化的 `superseded_by` → 来源可信级 → 置信度 → 新鲜度），不使用向量相似度；
+- 证据不足 → 自动 abstain 说明（不编造原因）；`inferred` 证据强制标注推断。
+
 ## 服务化
 
 ### FastAPI 侧车
@@ -128,25 +154,29 @@ py tools/eval_longterm.py --bge-m3 --mode quad   # 中文五类能力评测
 | [开发计划：可插拔后端](docs/开发计划-可插拔后端.md) | TimeStore/GraphStore 抽象与默认路径零开销的实施计划 |
 | [后端选型](docs/后端选型.md) | 规模/并发/深跳决策表、注入示例、性能数据 |
 | [规模化检索方案](docs/规模化检索方案.md) | 暴力检索治理：ANN top-k、邻接缓存、时间 SQL 预筛与后续路线 |
+| [业务改造](docs/业务改造.md) | 0.5.0 记忆 Runtime 业务设计稿（六类对象/状态解析/时间链/证据） |
+| [改造系统设计与架构设计](docs/改造系统设计与架构设计.md) | 0.5.0 架构设计稿（模块/DDL/管线/API/评测，已按本稿实施） |
 
 ## 目录结构
 
 ```text
-src/dnamemory/    核心库（models/store/retrieval/governance/memory/extract/embeddings/rerank/cli）
+src/dnamemory/    核心库（models/store/retrieval/governance/memory/extract/embeddings/rerank/cli
+                   + 0.5.0: resolve/temporal/coherence/context/backends）
 app/              FastAPI 侧车 + FastMCP 服务
-tools/            gate_check / eval_longterm / pg_migrate
-tests/            59 个 pytest 用例
-data/             自包含中文能力评测集
-docs/             四份正式文档
+tools/            gate_check / eval_longterm / eval_state / pg_migrate
+tests/            全量 pytest 用例
+data/             中文能力评测集 + 状态正确性评测集
+docs/             正式文档 + 两份 0.5.0 设计稿
 .github/          CI workflow
 ```
 
-## 验证状态（2026-08-03 基线）
+## 验证状态（2026-09-15 基线）
 
 | 项目 | 结果 |
 |---|---|
-| pytest 全量 | 59/59 通过 |
-| 门禁（真实快照） | dual Recall 0.993 / MAP 0.978；triple 1.000 / 0.996 |
-| 中文能力评测（bge-m3，triple/quad） | 五类能力整体 1.000 |
-| 安装 | `pip install -e .` 成功，`dnamemory --version` = 0.3.0 |
-| 待外部执行 | reranker 同义改写对比（需下载约 2GB 模型） |
+| pytest 全量 | 全部通过（含 0.5.0 状态层/时间链/一致性/服务/CLI 回归） |
+| 门禁（快照召回） | dual Recall 1.000 / MAP 1.000；triple 1.000 / 1.000 |
+| 门禁（状态正确性） | §25 Test 01-05 全过（当前事实/时间链顺序/观点演化/多维共存/证据不足 abstain） |
+| 状态正确性评测 | 五类能力（temporal_chain/belief_change/fact_conflict/evidence_grounding/cross_dimension）均 1.000 |
+| 安装 | `dnamemory --version` = 0.5.0 |
+| 向后兼容 | 0.4.0 旧库打开自动迁移（幂等补列建表），旧功能全绿 |
