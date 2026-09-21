@@ -87,6 +87,45 @@ def build_memory(data):
             _parse_ts(e.get("observed_at")), e.get("content_hash"),
             e.get("trust_level"), {}, _parse_ts(e.get("observed_at"))
             or QUERY_TIME)
+    for im in corpus.get("impacts", []):
+        nid = mem._name2id.get(im["subject"])
+        if nid is None:
+            continue
+        cause = im.get("cause")
+        cause_id = None
+        if cause:
+            for n in mem.store.fetch_nodes():
+                if n.node_type == "event" and n.name == cause:
+                    cause_id = n.nid
+                    break
+        mem.store.insert_impact(
+            nid, im["dimension"], im.get("direction", "increase"),
+            im.get("valence", "neutral"), im.get("magnitude", 0.5),
+            kind=im.get("kind", "objective"),
+            evaluator=im.get("evaluator", "agent"),
+            description=im.get("description", ""),
+            cause_event_id=cause_id,
+            source=im.get("source", "chat"),
+            confidence=im.get("confidence", 0.7),
+            valid_at=_parse_ts(im.get("valid_at")),
+            invalid_at=_parse_ts(im.get("invalid_at")),
+            created_at=_parse_ts(im.get("valid_at")) or QUERY_TIME)
+    for tg in corpus.get("triggers", []):
+        md = tg["memory"]
+        mtype = md["type"]
+        mid = None
+        if mtype == "event":
+            mid = mem._name2id.get(md["name"])
+        elif mtype == "intent":
+            for i in mem.store.fetch_intents():
+                if i.proposition == md["proposition"]:
+                    mid = i.id
+                    break
+        if mid is None:
+            continue
+        mem.store.insert_trigger(
+            mid, mtype, tg["trigger_type"], tg["text"], source="llm",
+            confidence=0.8, created_at=QUERY_TIME)
     return mem
 
 
@@ -121,6 +160,24 @@ def score_item(mem, item):
     if "event" in exp:
         got("event", any(exp["event"] in n.name
                          for n in ctx.recent_events))
+    if "impact" in exp:
+        target = exp["impact"]
+        got("impact", any(
+            (i.dimension, i.direction, i.valence)
+            == (target["dimension"], target["direction"],
+                target["valence"])
+            for i in ctx.impacts))
+    if "impacts_include" in exp:
+        triples = {(i.dimension, i.valence) for i in ctx.impacts}
+        got("impacts_include", all(
+            (t["dimension"], t["valence"]) in triples
+            for t in exp["impacts_include"]))
+    trig_used = ctx.trace is not None and ctx.trace.trigger_count > 0
+    if "trigger_event" in exp:
+        got("trigger_event", trig_used and any(
+            exp["trigger_event"] in n.name for n in ctx.recent_events))
+    if "trigger_has_intent" in exp:
+        got("trigger_has_intent", trig_used and bool(ctx.intents))
     return {"id": item["id"], "ability": item["ability"],
             "query": item["query"], "ok": ok, "detail": detail,
             "query_type": ctx.query_type}
@@ -160,7 +217,7 @@ def main():
     parser.add_argument("--data",
                         default=os.path.join(ROOT, "data", "eval_state.json"))
     parser.add_argument("--out",
-                        default=os.path.join(ROOT, "simulation",
+                        default=os.path.join(ROOT, "ops", "data",
                                              "state_eval_result.json"))
     args = parser.parse_args()
     report = run(args.data, args.out)

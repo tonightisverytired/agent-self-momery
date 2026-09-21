@@ -264,3 +264,15 @@ def test_regression_legacy_base_pair_migration(tmp_path):
             node_types=("event",))}
         assert old.issubset(new), f"迁移降级: {topic}"
     mem.close()
+
+
+# ---------------- S0-00-T 版本 0.7.0 ----------------
+def test_version_070():
+    import tomllib
+    from pathlib import Path
+
+    import dnamemory
+    assert dnamemory.__version__ == "0.8.2"
+    pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+    data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    assert data["project"]["version"] == "0.8.2"

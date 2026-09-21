@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""多路召回（时间/图谱/稠密语义/稀疏）+ 分数加权 RRF + 过滤链。"""
+"""多路召回（时间/图谱/词面/稠密语义/稀疏）+ 分数加权 RRF + 过滤链。"""
 from __future__ import annotations
 
 import math
@@ -98,28 +98,66 @@ def _graph_path(store, topics, max_hops, rel_filter, filters, now):
     return out
 
 
-def _semantic_path(store, text, filters):
-    tokens = re.findall(r"[0-9a-zA-Z\u4e00-\u9fff]+", text or "")
-    tokens = [t.lower() for t in tokens]
-    if not tokens:
+def _bigram_containment(q, hay, bq=None):
+    """字符 bigram 包含度：q 的去重 bigram 集中出现在 hay 里的比例。
+
+    q 已归一（lower + 去空白）；任一为空返回 0；**q 是 hay 的子串**短路
+    1.0（节点文本完整覆盖查询）；反向（hay 是 q 的子串，如实体名「用户」
+    之于「用户昨天三点」）不短路——短名节点只覆盖查询的一小部分，给
+    1.0 会让高频实体灌满榜首。单字符 q 无 bigram，由子串短路覆盖。
+    bq：调用方预计算的 q bigram 集（0.8.2 性能：全节点扫描时避免逐
+    节点重建）。
+    """
+    if not q or not hay:
+        return 0.0
+    if q in hay:
+        return 1.0
+    if len(q) < 2:
+        return 0.0
+    if bq is None:
+        bq = {q[i:i + 2] for i in range(len(q) - 1)}
+    return sum(1 for b in bq if b in hay) / len(bq)
+
+
+def _lexical_path(store, text, filters, min_score=0.15):
+    """词面路：字符 bigram 包含度打分（中文免分词）。
+
+    候选准入只看相关度：containment ≥ min_score（未乘价值分的原始
+    包含度）；节点得分 = containment × (0.5 + 0.5 × value_score)——
+    与稠密路「语义为主、价值为辅」同构，避免高价值分的弱相关节点
+    在 RRF 里挤掉低价值分的精确/前缀匹配（导航型查询不被价值稀释）。
+    """
+    q = re.sub(r"\s+", "", (text or "").lower())
+    if not q:
         return {}
+    bq = {q[i:i + 2] for i in range(len(q) - 1)} if len(q) >= 2 else None
     out = {}
     for n in store.fetch_nodes():
         if not _access_allowed(n, filters):
             continue
-        hay = (n.name + " " + n.description).lower()
-        hits = sum(1 for t in tokens if t in hay)
-        if hits:
-            out[n.nid] = (hits / len(tokens)) * n.value_score
+        name_l = n.name.lower()
+        c = max(_bigram_containment(q, name_l, bq),
+                _bigram_containment(q, n.description.lower(), bq))
+        # 实体锚定：节点名（≥2 字）是查询子串时保底 0.5——「公公的健康
+        # 状况是什么」里的「公公」是问句主语，须保证进候选池供扩展/事实
+        # 关联，但不能压过完整覆盖查询的事件（top-k 不被短名实体灌满）
+        if name_l and len(name_l) >= 2 and name_l in q:
+            c = max(c, 0.5)
+        if c <= 0 or c < min_score:  # c=0 不入候选（min_score=0 时防灌水）
+            continue
+        out[n.nid] = c * (0.5 + 0.5 * n.value_score)
     return out
 
 
 def _dense_path(store, embedder, text, filters, min_sim=0.55,
-                ann_top_k=None):
+                ann_top_k=None, by_kind=None):
     """真实稠密向量路：query 嵌入后与已存稠密向量做余弦相似度。
 
+    by_kind：分类型阈值（如长文 chat 节点低于全局 min_sim）。
     numpy 缺失时优雅降级为空（不阻断双路/图谱检索）。
     """
+    def _thr(node):
+        return by_kind.get(node.kind, min_sim) if by_kind else min_sim
     try:
         import numpy
     except ImportError:  # pragma: no cover
@@ -146,7 +184,7 @@ def _dense_path(store, embedder, text, filters, min_sim=0.55,
             if node is None or not _access_allowed(node, filters):
                 continue
             sim = 1.0 - dist
-            if sim >= min_sim:
+            if sim >= _thr(node):
                 out[nid] = sim * (0.5 + 0.5 * node.value_score)
         return out
     for nid, dense, _sparse, _model, _dim, _at in store.fetch_node_vectors():
@@ -158,7 +196,7 @@ def _dense_path(store, embedder, text, filters, min_sim=0.55,
         if norm == 0:
             continue
         sim = float(qv @ (v / norm))
-        if sim >= min_sim:
+        if sim >= _thr(node):
             # 语义为主、价值为辅：避免低价值但高度相关的事件被完全压掉
             out[nid] = sim * (0.5 + 0.5 * node.value_score)
     return out
@@ -215,6 +253,69 @@ def _sparse_path(store, embedder, text, filters, min_sim=0.25):
     return out
 
 
+_REL_DAYS = {"今天": 0, "昨天": -1, "前天": -2, "明天": 1, "后天": 2}
+
+
+def _extract_query_time(text, now):
+    """从查询文本提取时间锚点（0.8.1 时间感知）。
+
+    显式日期（2022年5月12日 / 2022-05-12 / 2022/05/12）精确锚定 tol=0；
+    相对词（今天/昨天/前天/明天/后天/上周/本周）按 now 换算，tol 放宽；
+    无年份的「5月12日」不锚定（跨年误判代价大，留给词面/语义路）。
+    """
+    if not text:
+        return None
+    m = re.search(r"(\d{4})\s*[-/年]\s*(\d{1,2})\s*[-/月]\s*(\d{1,2})\s*日?",
+                  text)
+    if m:
+        try:
+            return datetime(int(m.group(1)), int(m.group(2)),
+                            int(m.group(3))), 0
+        except ValueError:
+            pass
+    for w, d in _REL_DAYS.items():
+        if w in text:
+            return now + timedelta(days=d), 1
+    if "上周" in text or "上星期" in text:
+        return now - timedelta(days=7), 4
+    if "本周" in text or "这周" in text:
+        return now, 3
+    return None
+
+
+def _extract_monthday(text):
+    """无年份月日（「5月12日」）→ "MM-DD"；带年份的查询由显式日期优先处理。"""
+    if not text:
+        return None
+    if re.search(r"\d{4}\s*[-/年]\s*\d{1,2}\s*[-/月]\s*\d{1,2}", text):
+        return None    # 带年份的完整日期由显式日期路径处理
+    m = re.search(r"(\d{1,2})月(\d{1,2})[日号]", text)
+    if not m:
+        return None
+    mo, d = int(m.group(1)), int(m.group(2))
+    if not (1 <= mo <= 12 and 1 <= d <= 31):
+        return None
+    return f"{mo:02d}-{d:02d}"
+
+
+def _monthday_path(store, md):
+    """月日周年匹配：任一年的同月同日事件（ts 以 ISO 存储，切 5:10 位）。"""
+    rows = store.read(
+        "SELECT id, ts FROM nodes WHERE node_type='event' "
+        "AND ts IS NOT NULL ORDER BY id")
+    return {nid: 1.0 for nid, ts in rows if ts[5:10] == md}
+
+
+def _merged_max(dicts):
+    """多查询变体的路径结果按节点取 max（HyDE 变体融合）。"""
+    out = {}
+    for d in dicts:
+        for nid, sc in d.items():
+            if sc > out.get(nid, 0.0):
+                out[nid] = sc
+    return out
+
+
 def neighbors(store, node_name, rel=None, now=None):
     now = now or datetime.now()
     nodes = store.fetch_nodes()
@@ -235,19 +336,35 @@ def neighbors(store, node_name, rel=None, now=None):
 
 def recall(store, config, query, filters, k, mode, now, max_hops=None,
            tol_days=None, embedder=None, time_backend=None,
-           graph_backend=None):
+           graph_backend=None, alt_texts=None):
     filters = filters or RecallFilters()
     max_hops = max_hops or config.max_hops_default
     tol_days = tol_days or config.time_tolerance_days_default
+    # HyDE 查询变体（0.8.1 二轮）：去重保序，原文恒在首位
+    qtexts = [query.text] if query.text else []
+    for t in (alt_texts or []):
+        if t and t not in qtexts:
+            qtexts.append(t)
 
     paths = {}
-    if mode in ("time", "dual", "triple", "quad") and query.time:
-        t0, tol = query.time
-        tol = tol or tol_days
+    # 时间感知（0.8.1）：query.time 未显式给出时，从查询文本提取时间锚点；
+    # 无年份月日退到跨年周年匹配
+    qtime = query.time
+    q_md = None
+    if qtime is None and getattr(config, "time_aware_text", False) \
+            and query.text:
+        qtime = _extract_query_time(query.text, now)
+        if qtime is None:
+            q_md = _extract_monthday(query.text)
+    if mode in ("time", "dual", "triple", "quad") and qtime:
+        t0, tol = qtime
+        tol = tol_days if tol is None else tol
         if time_backend is not None:
             paths["time"] = time_backend.time_window(t0, tol)
         else:
             paths["time"] = _time_path(store, t0, tol)
+    elif mode in ("time", "dual", "triple", "quad") and q_md:
+        paths["time"] = _monthday_path(store, q_md)
     if mode in ("graph", "dual", "triple", "quad") and query.topic:
         rel = query.relation.rel_type if query.relation else None
         if graph_backend is not None:
@@ -257,26 +374,35 @@ def recall(store, config, query, filters, k, mode, now, max_hops=None,
         else:
             paths["graph"] = _graph_path(store, query.topic, max_hops, rel,
                                          filters, now)
-    if mode in ("semantic", "triple", "quad") and query.text:
+    if mode in ("semantic", "triple", "quad") and qtexts:
+        # 词面路始终计算；注入 embedder 时稠密路并行（不替换词面路）。
+        # HyDE 变体按路径内逐节点 max 融合
+        paths["lexical"] = _merged_max(
+            _lexical_path(store, t, filters, config.lexical_min_score)
+            for t in qtexts)
         if embedder is not None:
-            paths["semantic"] = _dense_path(store, embedder, query.text,
-                                            filters, config.dense_min_sim,
-                                            ann_top_k=max(
-                                                config.dense_ann_top_k,
-                                                k * 20))
-        else:
-            paths["semantic"] = _semantic_path(store, query.text, filters)
-    if mode == "quad" and query.text and embedder is not None:
-        paths["sparse"] = _sparse_path(store, embedder, query.text, filters,
-                                       config.sparse_min_sim)
+            paths["semantic"] = _merged_max(
+                _dense_path(store, embedder, t, filters,
+                            config.dense_min_sim,
+                            ann_top_k=max(config.dense_ann_top_k, k * 20),
+                            by_kind=getattr(config, "dense_min_sim_by_kind",
+                                            None))
+                for t in qtexts)
+    if mode == "quad" and qtexts and embedder is not None:
+        paths["sparse"] = _merged_max(
+            _sparse_path(store, embedder, t, filters, config.sparse_min_sim)
+            for t in qtexts)
 
     scores = {}
     contrib = {}
+    path_scores = {}
     for pname, ps in paths.items():
         ranked = sorted(ps.items(), key=lambda x: (-x[1], x[0]))
         for rk, (nid, sc) in enumerate(ranked):
             scores[nid] = scores.get(nid, 0.0) + sc / (config.rrf_k + rk)
             contrib.setdefault(nid, []).append(pname)
+            path_scores.setdefault(nid, {})[pname] = {"score": sc,
+                                                      "rank": rk}
 
     if query.relation:
         allowed = {nb.nid for nb, _, _ in neighbors(
@@ -303,7 +429,8 @@ def recall(store, config, query, filters, k, mode, now, max_hops=None,
     scores = filtered
 
     # 并列规则（与模拟基线一致）：分数降序 → 贡献路径优先级
-    # (time < graph < semantic) → id 升序；保证回归数值可复刻
+    # (time < graph < lexical < semantic < sparse) → id 升序；
+    # 保证回归数值可复刻
     path_index = {name: i for i, name in enumerate(paths)}
     prio = {nid: min(path_index[p] for p in ps)
             for nid, ps in contrib.items()}
@@ -311,6 +438,7 @@ def recall(store, config, query, filters, k, mode, now, max_hops=None,
                     key=lambda x: (-x[1], prio[x[0]], x[0]))
     return [
         MemoryHit(nid, nodes[nid].node_type, nodes[nid].name, nodes[nid].ts,
-                  sc, tuple(p for p, ps in paths.items() if nid in ps))
+                  sc, tuple(p for p, ps in paths.items() if nid in ps),
+                  path_scores.get(nid))
         for nid, sc in ranked[:k]
     ]

@@ -14,6 +14,9 @@ from datetime import datetime, timedelta
 
 from . import MemorySystem, RecallQuery, __version__
 from .errors import MemoryError
+from .models import to_naive
+from .settings import apply_config
+from .storage import resolve_dsn
 
 
 def _force_utf8():
@@ -28,10 +31,37 @@ def _emit(obj):
     print(json.dumps(obj, ensure_ascii=False, indent=2))
 
 
+def _db_path(args):
+    """SQLite 路径解析（命令行 > DNAMEMORY_DB > 内置默认）。
+
+    与 `_open_memory` 同源：需要「库是否存在」判断的地方必须走这里，
+    否则 `--db` 的默认值是 None 时会 `os.path.exists(None)` 抛 TypeError。
+    """
+    return (args.db or os.environ.get("DNAMEMORY_DB")
+            or "user_memory.db")
+
+
+def _open_memory(args):
+    """打开存储：``--dsn`` 优先（命令行 > DNAMEMORY_DSN > SQLite 路径）。
+
+    SQLite 路径同样遵循「命令行 > 环境变量/配置文件 > 内置默认」，
+    否则 ``--db`` 的硬编码默认值会遮蔽配置文件里的 DNAMEMORY_DB。
+    """
+    return MemorySystem(path=_db_path(args),
+                        dsn=resolve_dsn(getattr(args, "dsn", None)))
+
+
 def _handle(e):
     code = getattr(e, "code", "E000")
     print(f"Error {code}: {e}", file=sys.stderr)
     return 1
+
+
+def _parse_ids(s):
+    """逗号分隔 id 列表参数解析（如 "1,2" → [1, 2]）。"""
+    if not s:
+        return None
+    return [int(x) for x in s.split(",") if x.strip()]
 
 
 def _hit(h):
@@ -41,13 +71,14 @@ def _hit(h):
 
 
 def cmd_add_event(args):
-    mem = MemorySystem(path=args.db)
+    mem = _open_memory(args)
     try:
-        ts = datetime.fromisoformat(args.ts) if args.ts else None
+        ts = to_naive(datetime.fromisoformat(args.ts)) if args.ts else None
         nid = mem.add_event(args.name, ts, kind=args.kind,
                             value_score=args.value_score,
                             protected=args.protected,
-                            access_label=args.access_label)
+                            access_label=args.access_label,
+                            evidence_ids=_parse_ids(args.evidence_ids))
         _emit({"id": nid})
         return 0
     except (MemoryError, ValueError) as e:
@@ -57,7 +88,7 @@ def cmd_add_event(args):
 
 
 def cmd_add_entity(args):
-    mem = MemorySystem(path=args.db)
+    mem = _open_memory(args)
     try:
         nid = mem.add_entity(args.name, kind=args.kind,
                              description=args.description,
@@ -72,9 +103,9 @@ def cmd_add_entity(args):
 
 
 def cmd_add_edge(args):
-    mem = MemorySystem(path=args.db)
+    mem = _open_memory(args)
     try:
-        va = datetime.fromisoformat(args.valid_at) if args.valid_at else None
+        va = to_naive(datetime.fromisoformat(args.valid_at)) if args.valid_at else None
         eid = mem.add_edge(args.from_, args.to, args.rel,
                            weight=args.weight, confidence=args.confidence,
                            valid_at=va)
@@ -87,12 +118,13 @@ def cmd_add_edge(args):
 
 
 def cmd_add_fact(args):
-    mem = MemorySystem(path=args.db)
+    mem = _open_memory(args)
     try:
-        va = datetime.fromisoformat(args.valid_at) if args.valid_at else None
+        va = to_naive(datetime.fromisoformat(args.valid_at)) if args.valid_at else None
         fid = mem.add_fact(args.entity, args.key, args.value,
                            source=args.source, confidence=args.confidence,
-                           valid_at=va)
+                           valid_at=va,
+                           evidence_ids=_parse_ids(args.evidence_ids))
         _emit({"id": fid})
         return 0
     except (MemoryError, ValueError) as e:
@@ -102,9 +134,9 @@ def cmd_add_fact(args):
 
 
 def cmd_recall(args):
-    mem = MemorySystem(path=args.db)
+    mem = _open_memory(args)
     try:
-        t0 = datetime.fromisoformat(args.time) if args.time else None
+        t0 = to_naive(datetime.fromisoformat(args.time)) if args.time else None
         query = RecallQuery(
             text=args.text,
             time=(t0, args.tol_days) if t0 is not None else None,
@@ -121,7 +153,7 @@ def cmd_recall(args):
 
 
 def cmd_forget(args):
-    mem = MemorySystem(path=args.db)
+    mem = _open_memory(args)
     try:
         target = (int(args.target) if str(args.target).strip().isdigit()
                   else args.target)
@@ -135,7 +167,7 @@ def cmd_forget(args):
 
 
 def cmd_reflect(args):
-    mem = MemorySystem(path=args.db)
+    mem = _open_memory(args)
     try:
         summary_id = mem.reflect_monthly(args.year, args.month)
         _emit({"summary_id": summary_id})
@@ -149,7 +181,7 @@ def cmd_reflect(args):
 def cmd_demo(args):
     """生成确定性演示库：实体+事件+关联边（seed=42），用于开箱即用体验。"""
     random.seed(42)
-    mem = MemorySystem(path=args.db)
+    mem = _open_memory(args)
     entities = [
         ("张总", "person", "项目负责人"), ("李工", "person", "后端工程师"),
         ("项目A", "project", "核心交付项目"), ("项目B", "project", "创新项目"),
@@ -180,7 +212,7 @@ def cmd_demo(args):
             mem.add_edge(eid, atom, "discusses", 0.7, 0.8,
                          valid_at=start + timedelta(days=i % 20))
     mem.close()
-    _emit({"ok": True, "events": 40, "db": args.db})
+    _emit({"ok": True, "events": 40, "db": _db_path(args)})
     return 0
 
 
@@ -189,7 +221,7 @@ def _iso(v):
 
 
 def cmd_history(args):
-    mem = MemorySystem(path=args.db)
+    mem = _open_memory(args)
     try:
         items = mem.memory_history(args.entity, dimension=args.dimension)
         if args.dimension == "fact":
@@ -214,10 +246,10 @@ def cmd_history(args):
 
 
 def cmd_timeline(args):
-    mem = MemorySystem(path=args.db)
+    mem = _open_memory(args)
     try:
-        start = datetime.fromisoformat(args.start) if args.start else None
-        end = datetime.fromisoformat(args.end) if args.end else None
+        start = to_naive(datetime.fromisoformat(args.start)) if args.start else None
+        end = to_naive(datetime.fromisoformat(args.end)) if args.end else None
         nodes = mem.timeline(entity_id=args.entity, start=start, end=end)
         _emit({"nodes": [
             {"dimension": n.dimension, "relation": n.relation,
@@ -236,9 +268,9 @@ def cmd_timeline(args):
 
 
 def cmd_context(args):
-    mem = MemorySystem(path=args.db)
+    mem = _open_memory(args)
     try:
-        t0 = datetime.fromisoformat(args.time) if args.time else None
+        t0 = to_naive(datetime.fromisoformat(args.time)) if args.time else None
         ctx = mem.recall_context(
             RecallQuery(text=args.text), query_type=args.query_type,
             query_time=t0)
@@ -255,6 +287,7 @@ def cmd_context(args):
             "intents": [{"proposition": i.proposition, "status": i.status}
                         for i in ctx.intents],
             "notes": ctx.notes,
+            "trace": ctx.trace.to_dict() if ctx.trace is not None else None,
         })
         return 0
     except (MemoryError, ValueError) as e:
@@ -264,7 +297,7 @@ def cmd_context(args):
 
 
 def cmd_explain(args):
-    mem = MemorySystem(path=args.db)
+    mem = _open_memory(args)
     try:
         target = (int(args.target) if str(args.target).strip().isdigit()
                   else args.target)
@@ -276,15 +309,31 @@ def cmd_explain(args):
             "source": ex["source"],
             "evidence": [{"id": e.id, "source_type": e.source_type,
                           "source_ref": e.source_ref} for e in ex["evidence"]],
-            "versions": [{"version": v[0], "content": v[1]}
-                         for v in ex["versions"]],
+            "versions": [_version_json(v) for v in ex["versions"]],
             "related": ex["related"],
+            "audits": ex["audits"],
         })
         return 0
     except (MemoryError, ValueError) as e:
         return _handle(e)
     finally:
         mem.close()
+
+
+def _version_json(v):
+    """explain() 版本链条目 → JSON：node 是 versions 表元组；
+    fact/belief/intent 是领域对象（0.8.1 IA-4 版本链）。"""
+    if isinstance(v, (tuple, list)):
+        return {"version": v[0], "content": v[1]}
+    if hasattr(v, "fid"):  # Fact
+        return {"id": v.fid, "key": v.key, "value": v.value,
+                "valid_at": v.valid_at.isoformat() if v.valid_at else None,
+                "invalid_at": (v.invalid_at.isoformat()
+                               if v.invalid_at else None)}
+    return {"id": getattr(v, "id", None),
+            "proposition": getattr(v, "proposition", ""),
+            "valid_at": (v.valid_at.isoformat()
+                         if getattr(v, "valid_at", None) else None)}
 
 
 def cmd_eval(args):
@@ -298,8 +347,11 @@ def cmd_eval(args):
         return 1
     with open(queries, encoding="utf-8") as f:
         data = json.load(f)
-    if os.path.exists(args.db):
-        mem = MemorySystem(path=args.db)
+    # DSN 或已存在的 SQLite 库 → 用它跑评测；否则现场构建语料（eval 不依赖
+    # 预先存在的库）。回归：此处原先读 `args.db`（默认已是 None）→ TypeError。
+    if resolve_dsn(getattr(args, "dsn", None)) \
+            or os.path.exists(_db_path(args)):
+        mem = _open_memory(args)
     else:
         mem = MemorySystem(path=":memory:")
         corpus = data.get("corpus") or {}
@@ -307,7 +359,7 @@ def cmd_eval(args):
             mem.add_entity(ent["name"], ent.get("kind", "concept"),
                            ent.get("description", ""))
         for ev in corpus.get("events", []):
-            ts = datetime.fromisoformat(ev["ts"]) if ev.get("ts") else None
+            ts = to_naive(datetime.fromisoformat(ev["ts"])) if ev.get("ts") else None
             mem.add_event(ev["name"], ts, kind=ev.get("kind", "life"),
                           value_score=ev.get("value_score", 0.5))
         for edge in corpus.get("edges", []):
@@ -319,7 +371,7 @@ def cmd_eval(args):
     rows = []
     for item in data["items"]:
         if item.get("time"):
-            t0 = datetime.fromisoformat(item["time"])
+            t0 = to_naive(datetime.fromisoformat(item["time"]))
             query = RecallQuery(time=(t0, int(item.get("tol_days", 2))),
                                 text=item.get("query"),
                                 topic=item.get("topic"))
@@ -356,8 +408,14 @@ def cmd_eval(args):
 
 def build_parser():
     parent = argparse.ArgumentParser(add_help=False)
-    parent.add_argument("--db", default="user_memory.db",
-                        help="SQLite 库路径（默认 user_memory.db）")
+    parent.add_argument("--db", default=None,
+                        help="SQLite 库路径（默认 DNAMEMORY_DB 或 user_memory.db）")
+    parent.add_argument("--config", default=None,
+                        help="配置文件路径（默认 ./dnamemory.env 或 "
+                             "DNAMEMORY_CONFIG）")
+    parent.add_argument("--dsn", default=None,
+                        help="PostgreSQL DSN（默认取环境变量 DNAMEMORY_DSN；"
+                             "提供后改用 PG 存储，忽略 --db）")
     parser = argparse.ArgumentParser(prog="dnamemory",
                                      description="dnamemory 命令行")
     parser.add_argument("--version", action="version",
@@ -371,6 +429,8 @@ def build_parser():
     p.add_argument("--value-score", type=float, default=0.5)
     p.add_argument("--protected", action="store_true")
     p.add_argument("--access-label", default="public")
+    p.add_argument("--evidence-ids", default=None,
+                   help="逗号分隔的证据 id，如 1,2")
     p.set_defaults(func=cmd_add_event)
 
     p = sub.add_parser("add-entity", parents=[parent], help="写入实体")
@@ -397,6 +457,8 @@ def build_parser():
     p.add_argument("--source", default="chat")
     p.add_argument("--confidence", type=float, default=0.7)
     p.add_argument("--valid-at", default=None)
+    p.add_argument("--evidence-ids", default=None,
+                   help="逗号分隔的证据 id，如 1,2")
     p.set_defaults(func=cmd_add_fact)
 
     p = sub.add_parser("recall", parents=[parent], help="召回记忆")
@@ -472,6 +534,11 @@ def main(argv=None):
     _force_utf8()
     parser = build_parser()
     args = parser.parse_args(argv)
+    # 先注入配置文件的键（不覆盖已存在的环境变量），后续读取点即可直接用
+    try:
+        apply_config(getattr(args, "config", None), strict=True)
+    except FileNotFoundError as e:
+        parser.error(str(e))
     try:
         return args.func(args)
     except MemoryError as e:

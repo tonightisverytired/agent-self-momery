@@ -51,7 +51,7 @@ def test_write_many_no_ts_does_not_fill_today(tmp_path):
         type="event", name="无时间事件", kind="chat", value_score=0.3)]])
     mem = MemorySystem(path=str(tmp_path / "m.db"), clock=lambda: clock)
     res = mem.write_many(["随便一条没有时间的记录"], extractor=ex)
-    assert res.accepted == 1
+    assert res.accepted == 2  # 事件 + 批级自动证据（IA-1）
     node = mem.store.fetch_nodes()[0]
     assert node.ts is None
     assert node.created_at == clock
@@ -66,7 +66,7 @@ def test_write_many_keeps_valid_items_from_mixed_batch(tmp_path):
     ]])
     mem = MemorySystem(path=str(tmp_path / "m.db"))
     res = mem.write_many(["混合批次"], extractor=ex)
-    assert res.accepted == 1
+    assert res.accepted == 2  # 有效事件 + 批级自动证据（IA-1）
     assert any(t == "fact" and "key" in r for t, r in res.rejected)
     assert len(mem.store.fetch_nodes()) == 1
     mem.close()
@@ -85,6 +85,23 @@ def test_prompt_has_state_types():
     for kw in ("belief", "intent", "evidence", "polarity", "status",
                "source_type"):
         assert kw in SYSTEM_PROMPT
+
+
+# ---------------- Q-02-T CausalProposer 协议 ----------------
+def test_causal_proposer_protocol():
+    from dnamemory.extract import DeepSeekCausalProposer
+    # 构造不依赖网络（惰性：不建连接、不查环境变量除非调用 propose）
+    p = DeepSeekCausalProposer(api_key="test-key", model="deepseek-v4-flash")
+    assert p.model == "deepseek-v4-flash"
+
+    class FakeProposer:
+        def propose(self, event, fact_change):
+            return [("搬迁工作调动", 0.8), ("家庭原因", 0.6)]
+
+    fp = FakeProposer()
+    cands = fp.propose("搬到上海", "city: 南京→上海")
+    assert isinstance(cands, list) and isinstance(cands[0], tuple)
+    assert cands[0][1] == 0.8
 
 
 def test_state_candidate_validation():
@@ -120,3 +137,58 @@ def test_state_candidate_validation():
     assert "evidence" in reasons
     # 同批其它合法候选不受影响
     assert any(c.type == "event" and c.name == "有效事件" for c in cands)
+
+
+# ---------------- P1-03-T impact 候选抽取 ----------------
+class TestImpactCandidate:
+    def _ex(self):
+        return DeepSeekExtractor(api_key="test-key")
+
+    def test_impact_valid_pass(self):
+        ex = self._ex()
+        data = {"memories": [
+            {"type": "impact", "subject": "用户", "dimension": "income",
+             "direction": "increase", "valence": "positive",
+             "magnitude": 0.7, "kind": "objective", "evaluator": "user",
+             "cause": "搬到上海", "description": "收入提高了",
+             "confidence": 0.8},
+        ]}
+        cands, rejects = ex._parse(data)
+        assert len(cands) == 1 and not rejects
+        c = cands[0]
+        assert c.type == "impact" and c.dimension == "income"
+        assert c.direction == "increase" and c.valence == "positive"
+        assert c.magnitude == 0.7 and c.impact_kind == "objective"
+        assert c.evaluator == "user" and c.cause == "搬到上海"
+        assert c.description == "收入提高了"
+
+    def test_impact_missing_dimension_rejected(self):
+        ex = self._ex()
+        data = {"memories": [
+            {"type": "impact", "direction": "increase",
+             "valence": "positive"},
+            {"type": "event", "name": "有效事件"},
+        ]}
+        cands, rejects = ex._parse(data)
+        assert len(cands) == 1 and cands[0].type == "event"
+        assert any(t == "impact" for t, _r in rejects)
+
+    def test_impact_bad_direction_rejected(self):
+        ex = self._ex()
+        data = {"memories": [
+            {"type": "impact", "dimension": "income", "direction": "up",
+             "valence": "positive"},
+        ]}
+        cands, rejects = ex._parse(data)
+        assert not cands and rejects
+
+    def test_impact_unknown_dimension_kept(self):
+        ex = self._ex()
+        data = {"memories": [
+            {"type": "impact", "dimension": "commute",
+             "direction": "decrease", "valence": "negative",
+             "magnitude": 0.4},
+        ]}
+        cands, rejects = ex._parse(data)
+        assert len(cands) == 1 and not rejects
+        assert cands[0].dimension == "commute"

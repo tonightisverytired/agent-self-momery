@@ -63,6 +63,46 @@ def test_memory_api_state(tmp_path):
     mem.close()
 
 
+# ---------------- L-01-T 结构化写入门面 ----------------
+def test_add_state_api():
+    from dnamemory.errors import ValidationError
+    mem = MemorySystem()
+    u = mem.add_entity("用户", "person")
+    t0 = datetime(2026, 1, 1)
+    # add_belief / add_intent 返回 id 且回读一致
+    bid = mem.add_belief(u, "上海成本高", polarity="negative",
+                         confidence=0.8, valid_at=t0)
+    assert mem.store.fetch_beliefs()[0].proposition == "上海成本高"
+    iid = mem.add_intent(u, "考虑离开上海", status="active", valid_at=t0)
+    assert mem.store.fetch_intents()[0].proposition == "考虑离开上海"
+    # subject 用名字模糊匹配到既有实体并记 audit
+    mem.add_entity("用户小号", "person")
+    bid2 = mem.add_belief("用户小号2", "模糊匹配观点", polarity="neutral",
+                          valid_at=t0)
+    target = mem._name2id["用户小号"]
+    assert any(b.id == bid2 and b.subject_id == target
+               for b in mem.store.fetch_beliefs())
+    ops = [r[0] for r in mem.store.read(
+        "SELECT op FROM audit_log WHERE op='endpoint_fuzzy_match'")]
+    assert ops
+    # 非法枚举抛 E001
+    with pytest.raises(ValidationError):
+        mem.add_belief(u, "x", polarity="bad")
+    with pytest.raises(ValidationError):
+        mem.add_intent(u, "x", status="bad")
+    # add_evidence 幂等键
+    e1 = mem.add_evidence("conversation", "c1", observed_at=t0,
+                          idempotency_key="ev1")
+    e2 = mem.add_evidence("conversation", "c1", observed_at=t0,
+                          idempotency_key="ev1")
+    assert e1 == e2
+    # access_label 生效
+    e3 = mem.add_evidence("user_statement", "s1", access_label="sensitive")
+    assert next(e for e in mem.store.fetch_evidence()
+                if e.id == e3).access_label == "sensitive"
+    mem.close()
+
+
 # ---------------- H-05-T CLI 4 命令 ----------------
 def test_cli_state_commands(tmp_path, capsys):
     mem, u, f1, f2 = _build(tmp_path)

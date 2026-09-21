@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>dnamemory 控制台</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div id="app-shell">
+    <aside class="sidebar">
+      <div class="side-brand">dnamemory</div>
+      <nav id="nav">
+        <a class="nav-item" href="#/dashboard">仪表盘</a>
+        <a class="nav-item" href="#/graph">图谱</a>
+        <a class="nav-item" href="#/browser">浏览</a>
+        <a class="nav-item" href="#/query">查询</a>
+        <a class="nav-item" href="#/write">写入</a>
+        <a class="nav-item" href="#/govern">治理</a>
+      </nav>
+    </aside>
+
+    <div class="main-col">
+      <header id="token-bar">
+        <h1>dnamemory 控制台 <span id="version-badge"></span></h1>
+        <div class="token-row">
+          <input id="token-input" type="password" placeholder="Bearer token"
+                 autocomplete="off">
+          <button id="token-save">保存</button>
+          <span id="conn-status" class="status-dot off">未连接</span>
+          <button id="stats-refresh">刷新统计</button>
+        </div>
+      </header>
+
+      <div id="charts-degraded" class="degraded-banner hidden">
+        ⚠ 图表库 CDN 加载失败，图表视图已降级为结构化列表（可刷新重试）。
+      </div>
+
+      <main>
+        <!-- ============ 仪表盘 ============ -->
+        <section id="dashboard" class="view" data-view="dashboard">
+          <h2>仪表盘</h2>
+          <div id="stat-cards" class="stat-grid"></div>
+          <p id="kpi-note" class="kpi-note"></p>
+          <div class="viz-grid">
+            <div class="panel sub">
+              <h3>节点类型分布</h3>
+              <div id="type-bars"></div>
+            </div>
+            <div class="panel sub">
+              <h3>边关系分布</h3>
+              <div id="rel-bars"></div>
+            </div>
+            <div class="panel sub">
+              <h3>生命周期分布</h3>
+              <div id="life-bars"></div>
+            </div>
+            <div class="panel sub">
+              <h3>访问标签分布</h3>
+              <div id="access-bars"></div>
+            </div>
+          </div>
+          <div class="panel sub">
+            <h3>最近事件</h3>
+            <div id="recent-events"></div>
+          </div>
+          <details class="panel sub">
+            <summary>原始 JSON（/stats 与 /graph 核对区）</summary>
+            <pre id="dashboard-json" class="json-out"></pre>
+          </details>
+        </section>
+
+        <!-- ============ 图谱 ============ -->
+        <section id="graph" class="view" data-view="graph">
+          <h2>记忆图谱</h2>
+          <div id="sub-banner" class="sub-banner hidden"></div>
+          <div class="toolbar">
+            <button id="graph-reload">重新加载</button>
+            <button id="graph-relayout">重排布局</button>
+            <span class="chip-group" id="type-chips">
+              <button class="chip on" data-type="entity">entity</button>
+              <button class="chip on" data-type="event">event</button>
+            </span>
+            <label class="chk"><input type="checkbox" id="hide-orphans">
+              隐藏孤立点</label>
+            <input id="graph-search" placeholder="搜索节点名">
+            <button id="graph-search-btn">定位</button>
+            <button id="graph-data-view">数据视图</button>
+          </div>
+          <div class="toolbar">
+            <span class="sub-label">子图：</span>
+            <input id="sub-center" placeholder="中心节点名">
+            <select id="sub-hops">
+              <option value="1">1 跳</option>
+              <option value="2" selected>2 跳</option>
+              <option value="3">3 跳</option>
+            </select>
+            <button id="sub-go">进入子图</button>
+            <button id="sub-exit" class="hidden">退出子图（全图）</button>
+          </div>
+          <div id="rel-chips" class="chip-group"></div>
+          <div id="graph-canvas" class="chart-box"></div>
+          <div id="graph-table" class="hidden"></div>
+        </section>
+
+        <!-- ============ 分面浏览 ============ -->
+        <section id="browser" class="view" data-view="browser">
+          <h2>记忆分面浏览</h2>
+          <div class="browser-row">
+            <input id="facts-entity" placeholder="实体名，如 用户">
+            <input id="facts-key" placeholder="key，如 city（留空=列全部事实）">
+            <button id="facts-query">查事实</button>
+            <input id="neighbors-node" placeholder="邻接查询节点">
+            <button id="neighbors-query">查邻接</button>
+          </div>
+          <div class="browser-row">
+            <input id="timeline-entity" placeholder="时间线实体">
+            <button id="timeline-query">时间线</button>
+            <input id="detail-id" placeholder="记忆 id">
+            <select id="detail-kind">
+              <option value="node">node</option>
+              <option value="fact">fact</option>
+              <option value="belief">belief</option>
+              <option value="intent">intent</option>
+            </select>
+            <select id="detail-dim">
+              <option value="fact">fact</option>
+              <option value="belief">belief</option>
+              <option value="intent">intent</option>
+              <option value="event">event</option>
+            </select>
+            <button id="detail-history">历史</button>
+            <button id="detail-explain">解释</button>
+            <button id="browser-raw">原始 JSON</button>
+          </div>
+          <div id="browser-vis" class="chart-box side hidden"></div>
+          <div id="browser-result"></div>
+          <pre id="browser-raw-out" class="json-out hidden"></pre>
+        </section>
+
+        <!-- ============ 查询台 ============ -->
+        <section id="query-console" class="view" data-view="query">
+          <h2>查询台</h2>
+          <div class="query-row">
+            <input id="recall-text" placeholder="查询文本">
+            <input id="recall-k" type="number" value="8" min="1" max="100">
+            <select id="recall-mode">
+              <option value="triple">triple</option>
+              <option value="dual">dual</option>
+              <option value="time">time</option>
+              <option value="graph">graph</option>
+              <option value="semantic">semantic</option>
+              <option value="quad">quad</option>
+            </select>
+            <button id="recall-run">召回</button>
+            <input id="ctx-text" placeholder="上下文查询">
+            <select id="ctx-type">
+              <option value="">自动路由</option>
+              <option value="current_state">current_state</option>
+              <option value="history">history</option>
+              <option value="timeline">timeline</option>
+              <option value="change">change</option>
+              <option value="why_change">why_change</option>
+              <option value="semantic_recall">semantic_recall</option>
+            </select>
+            <button id="ctx-run">上下文</button>
+            <button id="query-raw">原始 JSON</button>
+          </div>
+          <h3 class="sub-h">召回结果</h3>
+          <div id="recall-result"></div>
+          <h3 class="sub-h">上下文 16 区块
+            <span class="sub-h-tip">/context 的完整产出，按四组展示；每块标注中文名、
+              英文键名与释义</span></h3>
+          <div id="ctx-blocks" class="ctx-blocks"></div>
+          <pre id="query-result" class="json-out"></pre>
+        </section>
+
+        <!-- ============ 写入表单 ============ -->
+        <section id="write-form" class="view" data-view="write">
+          <h2>写入表单</h2>
+          <div class="write-row">
+            <select id="write-kind">
+              <option value="entities">entities</option>
+              <option value="events">events</option>
+              <option value="facts">facts</option>
+              <option value="beliefs">beliefs</option>
+              <option value="intents">intents</option>
+              <option value="impacts">impacts</option>
+              <option value="evidence">evidence</option>
+              <option value="edges">edges</option>
+            </select>
+            <button id="write-submit">写入</button>
+            <button id="write-clear">清空</button>
+          </div>
+          <div id="write-fields" class="write-fields"></div>
+          <div class="write-row">
+            <textarea id="write-text" rows="2"
+                      placeholder="文本抽取写入（需 --fallback-extractor 或 LLM extractor）"></textarea>
+            <button id="write-text-submit">抽取写入</button>
+          </div>
+          <div class="write-row">
+            <textarea id="write-batch" rows="4"
+                      placeholder="批量写入：每行一条文本（上限 100 条）"></textarea>
+            <button id="batch-submit">批量写入</button>
+          </div>
+          <div id="write-result"></div>
+          <pre id="write-raw" class="json-out hidden"></pre>
+        </section>
+
+        <!-- ============ 治理操作台 ============ -->
+        <section id="govern-console" class="view" data-view="govern">
+          <h2>治理操作台</h2>
+          <div class="govern-row">
+            <button data-gov="resolve-conflicts">解决冲突</button>
+            <button data-gov="resolve-entities">实体消解</button>
+            <button data-gov="derive-impact-links">影响链推导</button>
+            <button data-gov="extract-patterns">模式提取</button>
+            <button data-gov="step-day">步进一天</button>
+            <button data-gov="compress-stable" class="destructive">压缩稳定记忆</button>
+            <button data-gov="reflect" class="destructive">月度反射</button>
+            <input id="reflect-year" type="number" value="2026" min="2000" max="2200">
+            <input id="reflect-month" type="number" value="7" min="1" max="12">
+            <input id="restore-id" type="number" placeholder="restore node_id">
+            <button data-gov="restore">恢复节点</button>
+            <input id="forget-target" placeholder="forget 目标">
+            <input id="forget-reason" placeholder="原因" value="manual">
+            <button data-gov="forget" class="destructive">遗忘</button>
+            <button id="govern-raw">原始 JSON</button>
+          </div>
+          <div id="govern-result"></div>
+          <pre id="govern-raw-out" class="json-out hidden"></pre>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <div id="drawer" class="drawer">
+    <div class="drawer-head">
+      <b id="drawer-title"></b>
+      <button id="drawer-close">×</button>
+    </div>
+    <div id="drawer-body"></div>
+  </div>
+  <div id="drawer-mask" class="drawer-mask hidden"></div>
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="/static/app.js"></script>
+  <script src="/static/views/dashboard.js"></script>
+  <script src="/static/views/graph.js"></script>
+  <script src="/static/views/browser.js"></script>
+  <script src="/static/views/query.js"></script>
+  <script src="/static/views/write.js"></script>
+  <script src="/static/views/govern.js"></script>
+</body>
+</html>

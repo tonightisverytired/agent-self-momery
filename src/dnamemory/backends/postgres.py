@@ -68,11 +68,27 @@ class PostgresTimeBackend:
             pass
 
 
+def _assert_not_primary_store(conn):
+    """守卫：目标库若是 PGStore 主存储（完整 schema），拒绝 DROP。
+
+    本函数的 DDL 是**精简版**（nodes 只有 5 列、edges 无生命周期），与主存储
+    schema 不可共存；误指主存储库会在 DROP 时删掉全部数据。
+    """
+    row = conn.execute(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_name='nodes' AND column_name='idempotency_key'").fetchone()
+    if row:
+        raise StorageError(
+            "E009 目标库是 dnamemory 主存储 schema（nodes 含 idempotency_key），"
+            "拒绝执行 DROP。时间链后端请用独立的库（如 dnamemory_legacy）。")
+
+
 def sync_memory_to_postgres(mem, dsn: str):
     """把 MemorySystem 的 nodes/edges 预置到 Postgres（查询只读用）。"""
     import psycopg
     conn = psycopg.connect(dsn)
     try:
+        _assert_not_primary_store(conn)
         conn.execute("DROP TABLE IF EXISTS edges")
         conn.execute("DROP TABLE IF EXISTS nodes")
         conn.execute(DDL)

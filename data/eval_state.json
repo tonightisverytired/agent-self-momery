@@ -36,6 +36,22 @@
     "evidence": [
       {"source_type": "conversation", "source_ref": "conv-1",
        "observed_at": "2026-07-01"}
+    ],
+    "impacts": [
+      {"subject": "用户", "dimension": "income", "direction": "increase",
+       "valence": "positive", "magnitude": 0.7, "kind": "objective",
+       "evaluator": "user", "cause": "搬到上海", "source": "chat",
+       "confidence": 0.8, "valid_at": "2026-07-01"},
+      {"subject": "用户", "dimension": "stress", "direction": "increase",
+       "valence": "negative", "magnitude": 0.8, "kind": "subjective",
+       "evaluator": "user", "cause": "搬到上海", "source": "chat",
+       "confidence": 0.8, "valid_at": "2026-08-01"}
+    ],
+    "triggers": [
+      {"memory": {"type": "event", "name": "搬到上海"},
+       "trigger_type": "horizon", "text": "未来居住规划"},
+      {"memory": {"type": "intent", "proposition": "考虑离开上海"},
+       "trigger_type": "bridge", "text": "生活成本"}
     ]
   },
   "items": [
@@ -78,6 +94,22 @@
     {"id": "f3", "ability": "fact_conflict", "query": "口味是辣还是甜",
      "expected": {"has_conflict": true}},
     {"id": "f4", "ability": "fact_conflict", "query": "我到底喜欢辣的还是甜的",
-     "expected": {"has_conflict": true}}
+     "expected": {"has_conflict": true}},
+    {"id": "i1", "ability": "impact_state", "query": "搬到上海对我有什么影响",
+     "expected": {"impact": {"dimension": "income", "direction": "increase",
+                             "valence": "positive"}}},
+    {"id": "i2", "ability": "impact_state", "query": "换工作以后压力怎么样",
+     "expected": {"impact": {"dimension": "stress", "direction": "increase",
+                             "valence": "negative"}}},
+    {"id": "i3", "ability": "impact_state", "query": "搬去上海有什么好处和坏处",
+     "expected": {"impacts_include": [
+       {"dimension": "income", "valence": "positive"},
+       {"dimension": "stress", "valence": "negative"}]}},
+    {"id": "a1", "ability": "associative_recall", "query": "我的未来居住规划是什么",
+     "expected": {"trigger_event": "搬到上海"}},
+    {"id": "a2", "ability": "associative_recall", "query": "生活成本方面我在考虑什么",
+     "expected": {"trigger_has_intent": true}},
+    {"id": "a3", "ability": "associative_recall", "query": "未来居住规划",
+     "expected": {"trigger_event": "搬到上海"}}
   ]
 }

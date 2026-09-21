@@ -117,3 +117,43 @@ def abstain_accuracy(judgements):
     if not judgements:
         return 0.0
     return sum(1 for p, t in judgements if p == t) / len(judgements)
+
+
+def impact_state_accuracy(predicted, truth):
+    """影响状态正确率（0.7.0 P1，文档 §20.6）：truth 为
+    [(dimension, direction, valence), ...]，predicted 三元组召回。"""
+    if not truth:
+        return 0.0
+    return len(set(predicted) & set(truth)) / len(truth)
+
+
+def impact_dimension_accuracy(predicted, truth):
+    """影响维度正确率：只比对 dimension 分量。"""
+    if not truth:
+        return 0.0
+    p = {t[0] for t in predicted}
+    return len(p & {t[0] for t in truth}) / len(truth)
+
+
+def impact_direction_accuracy(predicted, truth):
+    """影响方向正确率：只比对 direction 分量。"""
+    if not truth:
+        return 0.0
+    p = {t[1] for t in predicted}
+    return len(p & {t[1] for t in truth}) / len(truth)
+
+
+def impact_valence_accuracy(predicted, truth):
+    """影响评价正确率：只比对 valence 分量。"""
+    if not truth:
+        return 0.0
+    p = {t[2] for t in predicted}
+    return len(p & {t[2] for t in truth}) / len(truth)
+
+
+def associative_recall_rate(hit_flags):
+    """关联召回命中率（0.7.0 P2，文档 §20.7）：hit_flags 为每查询
+    是否经 trigger 命中达标的布尔列表。"""
+    if not hit_flags:
+        return 0.0
+    return sum(1 for f in hit_flags if f) / len(hit_flags)

@@ -18,12 +18,29 @@ START = datetime(2026, 3, 1)
 
 # ---------------- A-01-T 版本 ----------------
 def test_version():
-    assert __version__ == "0.5.0"
+    assert __version__ == "0.8.2"
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     with open(os.path.join(root, "pyproject.toml"), encoding="utf-8") as f:
         text = f.read()
     m = re.search(r'^version\s*=\s*"([^"]+)"', text, re.M)
-    assert m and m.group(1) == "0.5.0"
+    assert m and m.group(1) == "0.8.2"
+
+
+# ---------------- J-01-T 五档 source_rank ----------------
+def test_source_rank_v5():
+    cfg = MemoryConfig()
+    assert cfg.source_rank["system_record"] == 5
+    assert cfg.source_rank["external_data"] == 5
+    assert cfg.source_rank["user_statement"] == 4
+    assert cfg.source_rank["profile"] == 4
+    assert cfg.source_rank["imported_memory"] == 3
+    assert cfg.source_rank["agent"] == 3
+    assert cfg.source_rank["chat"] == 2
+    assert cfg.source_rank["inferred"] == 1
+    custom = MemoryConfig(source_rank={"profile": 4, "chat": 1,
+                                       "system_record": 5})
+    assert custom.source_rank["chat"] == 1
+    assert custom.source_rank["system_record"] == 5
 
 
 # ---------------- A-02-T Belief ----------------
@@ -239,6 +256,25 @@ def test_new_columns():
     mem.close()
 
 
+# ---------------- K-01-T evidence access_label 列 ----------------
+def test_evidence_access_label():
+    mem = MemorySystem()
+    cols = {r[1] for r in mem.store.read("PRAGMA table_info(evidence)")}
+    assert "access_label" in cols
+    e1 = mem.store.insert_evidence("conversation", "c1", None, None, START,
+                                   None, None, {}, START)
+    e2 = mem.store.insert_evidence("user_statement", "s1", None, None, START,
+                                   None, None, {}, START,
+                                   access_label="sensitive")
+    rows = mem.store.fetch_evidence()
+    by_id = {e.id: e for e in rows}
+    assert by_id[e1].access_label == "public"
+    assert by_id[e2].access_label == "sensitive"
+    got = mem.store.get_evidence([e1, e2])
+    assert {e.access_label for e in got} == {"public", "sensitive"}
+    mem.close()
+
+
 # ---------------- A-14-T 向后兼容迁移 ----------------
 def test_migration_idempotent(tmp_path):
     path = str(tmp_path / "old.db")
@@ -285,3 +321,83 @@ def test_migration_idempotent(tmp_path):
     assert [n.nid for n in nodes2] == [n.nid for n in nodes]
     assert len(mem2.store.fetch_facts()) == 0
     mem2.close()
+
+
+# ---------------- P1-01-T Impact 数据模型 ----------------
+class TestImpactModel:
+    def test_impact_validation(self):
+        from dnamemory.models import Impact
+        Impact(id=1, subject_id=2, dimension="income", direction="increase",
+               valence="positive", magnitude=0.7)
+        with pytest.raises(ValidationError):
+            Impact(id=1, subject_id=2, dimension="income", direction="up",
+                   valence="positive", magnitude=0.7)
+        with pytest.raises(ValidationError):
+            Impact(id=1, subject_id=2, dimension="income", direction="increase",
+                   valence="good", magnitude=0.7)
+        with pytest.raises(ValidationError):
+            Impact(id=1, subject_id=2, dimension="income", direction="increase",
+                   valence="positive", magnitude=1.5)
+        with pytest.raises(ValidationError):
+            Impact(id=1, subject_id=2, dimension="income", direction="increase",
+                   valence="positive", magnitude=0.7, kind="magic")
+
+    def test_dimension_extensible(self):
+        from dnamemory.models import Impact
+        # 自定义维度不强制枚举（文档 §7.1 允许业务扩展）
+        i = Impact(id=1, subject_id=2, dimension="commute",
+                   direction="increase", valence="negative", magnitude=0.6)
+        assert i.dimension == "commute"
+        assert i.evaluator == "agent"
+
+    def test_memory_state_new_fields_default_empty(self):
+        st = MemoryState()
+        assert st.impacts == [] and st.impact_history == []
+
+    def test_trace_to_dict_backward_compat(self):
+        from dnamemory.models import RecallTrace
+        tr = RecallTrace(query="q", candidate_count=3)
+        d = tr.to_dict()
+        assert d["impact_count"] == 0 and d["impact_chain_count"] == 0
+        assert d["trigger_count"] == 0 and d["pattern_count"] == 0
+        assert d["candidate_count"] == 3
+
+
+# ---------------- P2-01-T Trigger 数据模型 ----------------
+class TestTriggerModel:
+    def test_trigger_type_validation(self):
+        from dnamemory.models import Trigger
+        t = Trigger(id=1, memory_id=2, memory_type="event",
+                    trigger_type="horizon", text="未来居住规划")
+        assert t.source == "rule"
+        with pytest.raises(ValidationError):
+            Trigger(id=1, memory_id=2, memory_type="event",
+                    trigger_type="magic", text="x")
+
+    def test_memory_context_impact_chains_default(self):
+        from dnamemory.context import MemoryContext
+        ctx = MemoryContext()
+        assert ctx.impact_chains == []
+
+
+# ---------------- P3-01-T Pattern 数据模型 ----------------
+class TestPatternModel:
+    def test_pattern_type_validation(self):
+        from dnamemory.models import Pattern
+        p = Pattern(id=1, pattern_type="preference", subject_id=2,
+                    proposition="偏好低加班工作", confidence=0.7, support=2)
+        assert p.source == "inferred"
+        with pytest.raises(ValidationError):
+            Pattern(id=1, pattern_type="magic", subject_id=2,
+                    proposition="x")
+
+    def test_source_forced_inferred(self):
+        from dnamemory.models import Pattern
+        p = Pattern(id=1, pattern_type="preference", subject_id=2,
+                    proposition="x", source="profile")
+        # 总结/推断不得伪装原始事实：非 inferred 来源强制归一
+        assert p.source == "inferred"
+
+    def test_pattern_in_memory_state_default(self):
+        st = MemoryState()
+        assert st.patterns == []

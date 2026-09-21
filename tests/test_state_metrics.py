@@ -55,7 +55,7 @@ def test_eval_state_script(tmp_path):
     import os
     import sys
     tools_dir = os.path.join(os.path.dirname(os.path.dirname(
-        os.path.abspath(__file__))), "tools")
+        os.path.abspath(__file__))), "ops")
     sys.path.insert(0, tools_dir)
     from eval_state import run  # noqa: E402
     data_path = os.path.join(os.path.dirname(os.path.dirname(
@@ -68,3 +68,35 @@ def test_eval_state_script(tmp_path):
     for ab in ("belief_change", "fact_conflict", "evidence_grounding",
                "cross_dimension", "temporal_chain"):
         assert sum(1 for i in data["items"] if i["ability"] == ab) >= 4
+
+
+# ---------------- P1-08-T impact metrics ----------------
+class TestImpactMetrics:
+    def test_impact_state_accuracy(self):
+        from dnamemory.metrics import impact_state_accuracy
+        truth = [("income", "increase", "positive"),
+                 ("stress", "increase", "negative")]
+        pred = [("income", "increase", "positive")]
+        assert impact_state_accuracy(pred, truth) == 0.5
+        assert impact_state_accuracy(pred, []) == 0.0
+        assert impact_state_accuracy([], truth) == 0.0
+
+    def test_impact_component_accuracies(self):
+        from dnamemory.metrics import (impact_dimension_accuracy,
+                                       impact_direction_accuracy,
+                                       impact_valence_accuracy)
+        truth = [("income", "increase", "positive")]
+        assert impact_dimension_accuracy([("income", "x", "y")], truth) == 1.0
+        assert impact_direction_accuracy([("x", "increase", "y")],
+                                         truth) == 1.0
+        assert impact_valence_accuracy([("x", "y", "positive")],
+                                       truth) == 1.0
+        assert impact_dimension_accuracy([], truth) == 0.0
+
+
+# ---------------- P2-08-T associative recall metric ----------------
+def test_associative_recall_rate():
+    from dnamemory.metrics import associative_recall_rate
+    flags = [True, True, False, True, False]
+    assert associative_recall_rate(flags) == 0.6
+    assert associative_recall_rate([]) == 0.0

@@ -92,6 +92,60 @@ def test_chain_two_events_time_order():
     mem.close()
 
 
+# ---------------- N-02-T edges 参与链构建 ----------------
+def test_edges_in_chain():
+    mem = MemorySystem()
+    t0 = datetime(2026, 1, 1)
+    e1 = mem.add_event("事件A", t0, kind="life")
+    e2 = mem.add_event("事件B", t0 + timedelta(days=1), kind="life")
+    e3 = mem.add_event("事件C", t0 + timedelta(days=2), kind="life")
+    # precedes：B 相对 A 为 before（显式边覆盖默认）
+    mem.add_edge(e1, e2, "precedes", 0.8, 0.9, valid_at=t0)
+    # causes：A 导致 C → C 相对 A 为 caused_by
+    mem.add_edge(e1, e3, "causes", 0.8, 0.9, valid_at=t0)
+    nodes = {n.nid: n for n in mem.store.fetch_nodes()}
+    builder = TemporalChainBuilder(mem.config)
+    chains = builder.build([nodes[e1], nodes[e2], nodes[e3]],
+                           links=[], edges=mem.store.fetch_edges())
+    ns = chains[0].nodes
+    assert [n.memory.nid for n in ns] == [e1, e2, e3]
+    assert ns[1].relation == "before" and ns[1].source_id == e1
+    assert ns[2].relation == "caused_by" and ns[2].source_id == e1
+    # 无边时默认 before 不变
+    chains2 = builder.build([nodes[e1], nodes[e3]], links=[], edges=[])
+    assert chains2[0].nodes[1].relation == "before"
+    mem.close()
+
+
+# ---------------- Q-01-T 规则因果推导 ----------------
+def test_derive_causes():
+    from dnamemory.temporal import derive_causes
+    mem = MemorySystem()
+    u = mem.add_entity("用户", "person")
+    t_switch = datetime(2026, 3, 1)
+    mem.add_fact(u, "city", "南京", source="profile", confidence=0.9,
+                 valid_at=datetime(2025, 8, 1), invalid_at=t_switch)
+    f_new = mem.add_fact(u, "city", "上海", source="profile", confidence=0.9,
+                         valid_at=t_switch)
+    t_near = t_switch + timedelta(days=3)
+    t_far = t_switch - timedelta(days=30)
+    ev_near = mem.add_event("搬到上海", t_near, kind="life")
+    ev_far = mem.add_event("很久以前的事", t_far, kind="life")
+    mem.add_edge(ev_near, u, "discusses", 0.7, 0.8, valid_at=t_near)
+    mem.add_edge(ev_far, u, "discusses", 0.7, 0.8, valid_at=t_far)
+    n = derive_causes(mem.store)
+    assert n == 1
+    links = mem.store.fetch_memory_links()
+    assert any(l.relation == "caused_by" and l.source_id == ev_near
+               and l.target_id == f_new and l.source_type == "event"
+               for l in links)
+    assert not any(l.source_id == ev_far for l in links)
+    # 重跑幂等
+    assert derive_causes(mem.store) == 0
+    assert len(mem.store.fetch_memory_links()) == len(links)
+    mem.close()
+
+
 def test_chain_superseded_facts_changes():
     clock = Clock()
     mem = MemorySystem(clock=clock)

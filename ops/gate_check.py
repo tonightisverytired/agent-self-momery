@@ -1,6 +1,10 @@
 # -*- coding: utf-8 -*-
 """正式项目 CI 门禁：固定快照 + 固定 seed 的指标检查。
 
+阶段 D 起新增「干扰集 + 自然问句」探针（paraphrase_probe）：独立确定性
+合成库，查询与事件名仅有部分 bigram 重叠，锁住词面路的真实相关性下限；
+不触碰既有快照与 dual/triple/state 门禁。
+
 运行（验收方/CI 执行）：
   py tools/gate_check.py
   py tools/gate_check.py --bge-m3 --mode quad
@@ -9,6 +13,7 @@
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import os
 import random
@@ -39,7 +44,108 @@ GATES = {
     "dual_map": 0.90,
     "triple_ge_dual_recall": True,
     "triple_ge_dual_map": True,
+    # 阶段 D 探针门禁（校准只改这里）：自然问句 hit@5 下限、域外零命中率
+    "paraphrase_hit_at_5": 0.8,
+    "paraphrase_abstain": 1.0,
 }
+
+PARAPHRASE_SEED = 20260804
+
+# 目标事件 + 自然问句：问句与事件名仅有部分 bigram 重叠（非词面同构），
+# 每条问句标注唯一期望事件。事件 value_score=0.6，高于干扰事件（0.5），
+# 模拟显著个人事件；干扰集只稀释候选池。
+PARAPHRASE_ITEMS = [
+    ("计划2026-08-04看牙", "看牙的计划安排在什么时候"),
+    ("被猫抓伤后打疫苗", "被猫抓了要去打疫苗吗"),
+    ("体检报告胆固醇偏高", "体检胆固醇查出来高吗"),
+    ("健身房办了张年卡", "健身年卡花了多少钱"),
+    ("晚上做糖醋排骨", "糖醋排骨打算什么时候做"),
+    ("收到妈妈寄的腊肠并煮煲仔饭", "妈妈寄的腊肠怎么吃"),
+    ("点奶茶少冰半糖却收到全糖", "奶茶点半糖结果给了全糖"),
+    ("和同事吃烤肉", "中午和同事吃了烤肉"),
+    ("娃的数学考试成绩进步奖励冰激凌", "娃数学考试成绩出来了吗"),
+    ("与妈妈视频通话四十分钟", "跟妈妈视频聊了多久"),
+    ("给花浇水发现多肉烂根", "多肉是不是烂根了"),
+    ("老板要求2026-08-10交方案", "老板要的方案什么时候交"),
+    ("周报未写2026-08-04上午截止", "周报什么时候截止"),
+    ("项目上线出bug紧急修复", "项目上线出了什么bug"),
+    ("同事离职吃散伙饭", "同事离职散伙饭定在哪"),
+    ("地铁二号线晚点导致迟到", "地铁二号线今天晚点了吗"),
+    ("地铁通勤忘带耳机", "早上挤地铁耳机忘带了"),
+    ("爬山看云海", "周末爬山看到云海了吗"),
+    ("快递显示签收但没收到", "快递显示签收了东西呢"),
+    ("洗衣机漏水报修", "洗衣机漏水找谁修"),
+    ("物业费涨价通知贴电梯", "物业费是不是涨价了"),
+    ("给猫换猫粮它不吃", "新买的猫粮猫不吃怎么办"),
+    ("信用卡账单分期还清", "信用卡账单还清了吗"),
+    ("公积金提取到账", "公积金提取的钱到账了吗"),
+    ("报名了周末羽毛球局", "周末羽毛球局还缺人吗"),
+    ("图书馆借的小说到期", "图书馆借的小说哪天到期"),
+    ("手机贴膜摔裂了", "手机膜摔裂了去哪贴"),
+    ("抢到了演唱会门票", "演唱会门票抢到了吗"),
+    ("阳台种的番茄结果了", "阳台番茄结果没有"),
+    ("理发店换了个新发型", "新发型是在哪家理发店做的"),
+]
+
+# 域外问句：与库内主题无关，期望零命中（abstain）
+OUT_OF_DOMAIN_QUERIES = [
+    "火星探测器什么时候返回地球",
+    "欧冠决赛哪天开球",
+    "欧元兑美元汇率走势",
+    "秦始皇陵考古进展",
+    "量子计算机量产时间表",
+]
+
+# 干扰事件模板：与目标主题无关，笛卡尔积展开 ~228 条
+DISTRACTOR_SPECS = [
+    ("优化{mod}模块的{asp}性能",
+     {"mod": ["订单", "支付", "库存", "搜索", "消息", "风控", "结算", "推荐"],
+      "asp": ["查询", "写入", "缓存", "并发", "启动"]}),
+    ("{lang}脚本处理{file}文件",
+     {"lang": ["Python", "Shell", "SQL", "Go"],
+      "file": ["日志", "账单", "影像", "问卷", "字典", "清单"]}),
+    ("训练{part}肌群{sets}组",
+     {"part": ["胸部", "背部", "腿部", "肩部", "手臂", "核心"],
+      "sets": ["三", "四", "五", "六"]}),
+    ("通关{game}第{ch}章节",
+     {"game": ["星穹铁道", "原神", "黑神话", "塞尔达", "艾尔登", "幻兽帕鲁"],
+      "ch": ["一", "二", "三", "四", "五", "六"]}),
+    ("撰写{topic}方向的综述初稿",
+     {"topic": ["图神经网络", "强化学习", "知识图谱", "蛋白质预测",
+                "量子纠错", "钙钛矿", "扩散模型", "大模型微调"]}),
+    ("复盘{idx}指数本周{dir}原因",
+     {"idx": ["沪深", "恒生", "纳斯达克", "标普"],
+      "dir": ["震荡", "反弹", "回调", "缩量"]}),
+    ("保养{part}更换{oil}",
+     {"part": ["发动机", "变速箱", "刹车系统", "轮胎"],
+      "oil": ["机油", "滤芯", "刹车片", "火花塞"]}),
+    ("整理{room}的{stuff}收纳",
+     {"room": ["书房", "储物间", "衣帽间", "储藏间"],
+      "stuff": ["旧杂志", "数据线", "工具", "药箱"]}),
+    ("申购{fund}基金{amt}元",
+     {"fund": ["沪深300", "中证500", "红利低波", "国债指数"],
+      "amt": ["500", "1000", "1500", "2000"]}),
+    ("学习{skill}第{wk}周课程",
+     {"skill": ["法语", "钢琴", "烘焙", "水彩"],
+      "wk": ["一", "二", "三", "四", "五", "六", "七", "八"]}),
+]
+
+PARAPHRASE_ENTITIES = [
+    ("妈妈", "person", "用户母亲"), ("老板", "person", "直属上级"),
+    ("同事", "person", "同组同事"), ("娃", "person", "用户孩子"),
+    ("猫", "pet", "家养橘猫"),
+]
+
+PARAPHRASE_EDGES = [
+    ("收到妈妈寄的腊肠并煮煲仔饭", "妈妈", "mentions"),
+    ("与妈妈视频通话四十分钟", "妈妈", "mentions"),
+    ("老板要求2026-08-10交方案", "老板", "discusses"),
+    ("和同事吃烤肉", "同事", "mentions"),
+    ("同事离职吃散伙饭", "同事", "mentions"),
+    ("娃的数学考试成绩进步奖励冰激凌", "娃", "mentions"),
+    ("被猫抓伤后打疫苗", "猫", "mentions"),
+    ("给猫换猫粮它不吃", "猫", "mentions"),
+]
 
 
 def build_synthetic_snapshot(path):
@@ -194,6 +300,69 @@ def check_state_gates(mem):
     return checks
 
 
+def build_paraphrase_memory():
+    """探针合成库（seed 固定）：30 目标事件 + ~228 模板干扰事件 + 少量实体/边。
+
+    返回 (mem, {目标事件名: nid}, 干扰事件数)。目标事件先入库（nid 小、
+    平分决胜稳定），干扰事件按 seed 洗牌后入库。
+    """
+    rng = random.Random(PARAPHRASE_SEED)
+    mem = MemorySystem(path=":memory:")
+    for name, kind, desc in PARAPHRASE_ENTITIES:
+        mem.add_entity(name, kind, desc)
+    expected = {}
+    base = datetime(2026, 7, 20)
+    for i, (name, _q) in enumerate(PARAPHRASE_ITEMS):
+        expected[name] = mem.add_event(name, base + timedelta(days=i % 30),
+                                       kind="life", value_score=0.6)
+    for a, b, rel in PARAPHRASE_EDGES:
+        mem.add_edge(a, b, rel, weight=0.9, confidence=0.8, valid_at=base)
+    distractors = []
+    for tpl, slots in DISTRACTOR_SPECS:
+        keys = sorted(slots)
+        for combo in itertools.product(*(slots[k] for k in keys)):
+            distractors.append(tpl.format(**dict(zip(keys, combo))))
+    rng.shuffle(distractors)
+    for i, name in enumerate(distractors):
+        mem.add_event(name, base + timedelta(days=i % 60), kind="life",
+                      value_score=0.5)
+    return mem, expected, len(distractors)
+
+
+def paraphrase_probe(k=5):
+    """阶段 D 探针：干扰集 + 自然问句，无 embedder triple 模式。
+
+    指标：hit@k（30 条标注问句的唯一期望事件是否进 top-k）与
+    域外零命中率（5 条域外问句是否全部零命中）。
+    """
+    mem, expected, n_distractors = build_paraphrase_memory()
+    try:
+        miss = []
+        for name, q in PARAPHRASE_ITEMS:
+            hits = mem.recall(RecallQuery(text=q), k=k, mode="triple",
+                              node_types=("event",))
+            if expected[name] not in {h.node_id for h in hits}:
+                miss.append({"query": q, "expected": name,
+                             "hits": [h.name for h in hits]})
+        false_hits = []
+        for q in OUT_OF_DOMAIN_QUERIES:
+            hits = mem.recall(RecallQuery(text=q), k=k, mode="triple",
+                              node_types=("event",))
+            if hits:
+                false_hits.append({"query": q,
+                                   "hits": [h.name for h in hits]})
+    finally:
+        mem.close()
+    n_q, n_out = len(PARAPHRASE_ITEMS), len(OUT_OF_DOMAIN_QUERIES)
+    return {
+        "hit_at_5": round((n_q - len(miss)) / n_q, 4),
+        "abstain": round((n_out - len(false_hits)) / n_out, 4),
+        "n_queries": n_q, "n_out": n_out, "k": k,
+        "n_distractors": n_distractors,
+        "miss": miss, "false_hits": false_hits,
+    }
+
+
 def main():
     _force_utf8()
     parser = argparse.ArgumentParser()
@@ -266,14 +435,28 @@ def main():
         failed = [k for k, v in state_checks.items() if not v]
         reasons.append(f"状态正确性门禁未通过: {failed}")
 
+    # 阶段 D 探针：干扰集 + 自然问句（独立合成库，不触碰快照）
+    probe = paraphrase_probe()
+    if probe["hit_at_5"] < GATES["paraphrase_hit_at_5"]:
+        ok = False
+        reasons.append(
+            f"自然问句 hit@{probe['k']} 低于门禁: "
+            f"{probe['hit_at_5']} < {GATES['paraphrase_hit_at_5']}")
+    if probe["abstain"] < GATES["paraphrase_abstain"]:
+        ok = False
+        reasons.append(
+            f"域外零命中率低于门禁: {probe['abstain']} < "
+            f"{GATES['paraphrase_abstain']}")
+
     report = {
         "db": args.db, "snapshot_source": snapshot_source,
         "mode": args.mode, "bge_m3": args.bge_m3,
         "gates": GATES, "metrics": checks, "state": state_checks,
+        "paraphrase": probe,
         "ok": ok,
         "reasons": reasons,
     }
-    out = os.path.join(ROOT, "simulation", "gate_result.json")
+    out = os.path.join(ROOT, "ops", "data", "gate_result.json")
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)

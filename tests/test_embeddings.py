@@ -71,7 +71,7 @@ def test_write_many_embeds_extracted_nodes(tmp_path):
     ])
     mem = MemorySystem(path=str(tmp_path / "m.db"), embedder=emb)
     res = mem.write_many(["今天开会，张总负责"], extractor=ex)
-    assert res.accepted == 2
+    assert res.accepted == 3  # 2 节点 + 1 条批级自动证据（IA-1）
     assert len(mem.store.fetch_node_vectors()) == 2
     mem.close()
 

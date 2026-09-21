@@ -21,7 +21,9 @@ from pydantic import (BaseModel, ConfigDict, Field,
                       field_validator, model_validator)
 
 from .models import (BELIEF_POLARITIES, DEFAULT_RELATIONS,
-                     EVIDENCE_SOURCE_TYPES, INTENT_STATUSES, ExtractedMemory)
+                     EVIDENCE_SOURCE_TYPES, IMPACT_DIRECTIONS,
+                     IMPACT_KINDS, IMPACT_VALENCES, INTENT_STATUSES,
+                     TRIGGER_TYPES, ExtractedMemory, to_naive)
 
 EVENT_KINDS = frozenset({
     "meeting", "chat", "work", "life", "health", "sport", "entertainment",
@@ -45,8 +47,9 @@ SYSTEM_PROMPT = """你是长期个人智能体的记忆抽取器。把用户提�
 - type=belief: name=主体名(观点持有者，如"用户"), proposition=观点命题(如"上海生活成本高"), polarity(positive/negative/neutral), valid_at(观点生效时间，ISO 或空字符串), source, confidence(0-1)
 - type=intent: name=主体名, proposition=意图内容(如"考虑离开上海"), status(active/completed/cancelled/expired/superseded), valid_at(ISO 或空字符串), confidence(0-1)
 - type=evidence: source_type(user_statement/conversation/system_record/external_data/imported_memory/inferred), source_ref=来源引用(对话/消息标识), conversation_id(可选), message_id(可选), content_hash(可选), trust_level(1-5 数字)
+- type=impact: subject=受影响主体名(如"用户"), dimension=影响维度(income/work/health/stress/relationship/time/learning/satisfaction/risk/cost/quality/convenience 或业务自定义维度), direction(increase/decrease/stable/appear/disappear), valence(positive/negative/neutral/mixed/unknown), magnitude(0-1 影响程度), kind(objective/subjective), evaluator(评价主体，如 user/agent), cause=引起该影响的事件名(可空字符串), description(一句话说明), valid_at(ISO 或空字符串), confidence(0-1)。direction 表示"发生了什么变化"，valence 表示"评价方向"，两者不得混为一谈（如 income increase 不必然 positive）。
 
-完整 JSON 示例（含全部七种类型）：
+完整 JSON 示例（含全部八种类型）：
 {"memories": [
   {"type": "event", "name": "与张总讨论项目A预算", "kind": "meeting", "ts": "2026-08-03T10:30:00", "value_score": 0.7},
   {"type": "entity", "name": "张总", "kind": "person", "description": "项目负责人"},
@@ -54,17 +57,19 @@ SYSTEM_PROMPT = """你是长期个人智能体的记忆抽取器。把用户提�
   {"type": "edge", "from_": "张总", "to": "项目A", "rel": "participates", "confidence": 0.9},
   {"type": "belief", "name": "用户", "proposition": "上海生活成本高", "polarity": "negative", "valid_at": "2026-01-05", "source": "chat", "confidence": 0.8},
   {"type": "intent", "name": "用户", "proposition": "考虑离开上海", "status": "active", "valid_at": "2026-08-01", "confidence": 0.7},
-  {"type": "evidence", "source_type": "conversation", "source_ref": "msg-2026-08-01-001", "conversation_id": "conv-42", "message_id": "m1", "trust_level": 5}
+  {"type": "evidence", "source_type": "conversation", "source_ref": "msg-2026-08-01-001", "conversation_id": "conv-42", "message_id": "m1", "trust_level": 5},
+  {"type": "impact", "subject": "用户", "dimension": "income", "direction": "increase", "valence": "positive", "magnitude": 0.7, "kind": "objective", "evaluator": "user", "cause": "换工作", "description": "换工作后收入提高", "confidence": 0.8}
 ]}
 
 硬性要求：
 1. fact 必须同时给出 key 和 value；edge 必须同时给出 from_ 和 to，且 rel 只能是上面的枚举值。
 2. belief/intent 必须给出 proposition；belief 的 polarity 只能是 positive/negative/neutral；intent 的 status 只能是 active/completed/cancelled/expired/superseded。
 3. evidence 的 source_type 只能是 user_statement/conversation/system_record/external_data/imported_memory/inferred 之一。
-4. 时间规则：文本明确提到日期/时间才填 ts/valid_at；未提到时间必须输出空字符串 ""，禁止编造、禁止回填"今天"。
+4. impact 必须给出 subject/dimension/direction/valence；direction 只能是 increase/decrease/stable/appear/disappear；valence 只能是 positive/negative/neutral/mixed/unknown；kind 只能是 objective/subjective；magnitude 在 0-1 之间。
+5. 时间规则：文本明确提到日期/时间才填 ts/valid_at；未提到时间必须输出空字符串 ""，禁止编造、禁止回填"今天"。
    "今天/明天/昨天/周末/下周一"等相对时间按用户提供的当前真实日期换算成具体日期后再输出。
-5. 每条片段抽取 0-4 条候选，宁缺毋滥。
-6. 实体名要与原文保持一致；同一批内先出现的实体可作为后续 fact/edge/belief/intent 的端点。
+6. 每条片段抽取 0-4 条候选，宁缺毋滥；但对话中若出现明确的属性/偏好/观点/计划信号（如"我喜欢…""我打算…""…太贵了"），应抽取对应 fact/belief/intent，不要只抽 event。
+7. 实体名要与原文保持一致；同一批内先出现的实体可作为后续 fact/edge/belief/intent 的端点。
 """
 
 
@@ -87,10 +92,15 @@ def _parse_ts(value):
                 "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M",
                 "%Y-%m-%d", "%Y/%m/%d"):
         try:
-            return datetime.strptime(text, fmt)
+            # 带偏移量的输入（+08:00 / Z）必须归一到 naive：库内全链路用
+            # naive，aware 混进去会让后续的时间比较与排序抛 TypeError
+            return to_naive(datetime.strptime(text, fmt))
         except ValueError:
             continue
-    return None
+    try:                      # 兜底：fromisoformat 认 "Z" 等 Python 变体
+        return to_naive(datetime.fromisoformat(text))
+    except ValueError:
+        return None
 
 
 class MemoryCandidate(BaseModel):
@@ -124,6 +134,19 @@ class MemoryCandidate(BaseModel):
     content_hash: Optional[str] = None
     trust_level: Optional[float] = None
     valid_at: Optional[str] = None
+    # 0.7.0 P1：impact 候选字段
+    subject: Optional[str] = None
+    dimension: Optional[str] = None
+    direction: Optional[str] = None
+    valence: Optional[str] = None
+    magnitude: Optional[float] = Field(default=None, ge=0, le=1)
+    impact_kind: Optional[str] = None
+    evaluator: Optional[str] = None
+    cause: Optional[str] = None
+    # 0.7.0 P2：trigger 候选
+    trigger_type: Optional[str] = None
+    trigger_text: Optional[str] = None
+    trigger_target_type: Optional[str] = None
 
     @field_validator("name", "kind", "rel", "from_", "to", "key",
                      "proposition", "source_ref", "conversation_id",
@@ -137,9 +160,21 @@ class MemoryCandidate(BaseModel):
     @field_validator("value", mode="before")
     @classmethod
     def _value_str(cls, v):
+        """事实值必须是「有内容的标量字符串」。
+
+        空串/空容器/None 一律回 None，让 `_check_required` 判为缺 value 而
+        拒绝该候选——原实现 `str(v).strip()` 会把 `""`/`[]`/`false` 变成
+        可用值（`"[]"`、`"False"`）落库，空值事实随后参与裁决，能把真实值
+        判失效（同源时以 valid_at 新者为胜）。
+        """
         if v is None:
             return None
-        return str(v).strip()
+        if isinstance(v, (list, dict, tuple, set)):
+            return None
+        if isinstance(v, bool):
+            return str(v).lower()
+        text = str(v).strip()
+        return text or None
 
     @model_validator(mode="after")
     def _check_required(self):
@@ -180,6 +215,33 @@ class MemoryCandidate(BaseModel):
                 raise ValueError("evidence 缺少 source_type")
             if self.source_type not in EVIDENCE_SOURCE_TYPES:
                 raise ValueError(f"evidence source_type 非法: {self.source_type}")
+        elif t == "impact":
+            if not self.dimension:
+                raise ValueError("impact 缺少 dimension")
+            if not self.direction:
+                raise ValueError("impact 缺少 direction")
+            if self.direction not in IMPACT_DIRECTIONS:
+                raise ValueError(f"impact direction 非法: {self.direction}")
+            if not self.valence:
+                raise ValueError("impact 缺少 valence")
+            if self.valence not in IMPACT_VALENCES:
+                raise ValueError(f"impact valence 非法: {self.valence}")
+            # dimension 不校验枚举（文档 §7.1 允许业务扩展）
+            # 提示词示例里主观/客观写在 `kind`（与 event/entity 同名字段），
+            # 而模型字段叫 `impact_kind`：不兼容两处的话 LLM 输出永远落到
+            # `kind`，`impact_kind` 恒 None → 所有影响一律被存成 objective
+            if not self.impact_kind and self.kind:
+                self.impact_kind = self.kind
+            if self.impact_kind is not None \
+                    and self.impact_kind not in IMPACT_KINDS:
+                self.impact_kind = "objective"
+        elif t == "trigger":
+            if not self.name:
+                raise ValueError("trigger 缺少 target 记忆名")
+            if self.trigger_type not in TRIGGER_TYPES:
+                raise ValueError(f"trigger_type 非法: {self.trigger_type}")
+            if not self.trigger_text:
+                raise ValueError("trigger 缺少 trigger_text")
         else:
             raise ValueError(f"未知候选类型: {t}")
         return self
@@ -208,6 +270,31 @@ class MemoryCandidate(BaseModel):
                 message_id=self.message_id,
                 content_hash=self.content_hash,
                 trust_level=self.trust_level)
+        if self.type == "impact":
+            ts_text = self.valid_at or self.ts
+            return ExtractedMemory(
+                type=self.type,
+                name=self.subject or "",
+                ts=_parse_ts(ts_text) if ts_text else None,
+                source=self.source,
+                confidence=self.confidence,
+                dimension=self.dimension,
+                direction=self.direction,
+                valence=self.valence,
+                magnitude=self.magnitude,
+                impact_kind=self.impact_kind or "objective",
+                evaluator=self.evaluator or "agent",
+                description=self.description or "",
+                cause=self.cause)
+        if self.type == "trigger":
+            return ExtractedMemory(
+                type=self.type,
+                name=self.name or "",
+                confidence=self.confidence,
+                trigger_type=self.trigger_type,
+                trigger_text=self.trigger_text,
+                trigger_target_type=self.trigger_target_type
+                or self.kind or "event")
         return ExtractedMemory(
             type=self.type,
             name=self.name or "",
@@ -230,6 +317,58 @@ class Extractor(Protocol):
 
     def extract_many(self, texts: list[str], meta: dict | None = None,
                      batch_size: int = 20) -> list[list[ExtractedMemory]]: ...
+
+
+class CausalProposer(Protocol):
+    """LLM 因果提议（0.6.0 P2，可选）：只提议，不自动落库。
+
+    返回 [(proposition, confidence), ...]；调用方显式落 memory_links。
+    """
+
+    def propose(self, event, fact_change) -> list[tuple[str, float]]: ...
+
+
+class DeepSeekCausalProposer:
+    """DeepSeek 因果提议参考实现（惰性：构造不依赖网络，仅 propose 时调用）。"""
+
+    def __init__(self, api_key=None, model=None,
+                 base_url="https://api.deepseek.com",
+                 timeout=120, max_tokens=1500):
+        self.api_key = api_key or (find_deepseek_key() or (None, None))[1]
+        self.model = model or os.environ.get("DEEPSEEK_MODEL") \
+            or "deepseek-v4-pro"
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+        self.max_tokens = max_tokens
+
+    def propose(self, event, fact_change):
+        """LLM 因果提议；失败返回空列表（弱 LLM 原则：规则推导为主）。"""
+        import requests
+        prompt = (
+            "以下是一个记忆状态变化：\n"
+            f"事件：{event}\n变化：{fact_change}\n"
+            "请给出 1-3 条可能的因果关系说明，输出 JSON："
+            '{"causes": [{"proposition": "...", "confidence": 0.8}]}'
+            "；不确定就输出空数组。")
+        try:
+            resp = requests.post(
+                f"{self.base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {self.api_key}",
+                         "Content-Type": "application/json"},
+                json={"model": self.model,
+                      "messages": [{"role": "user", "content": prompt}],
+                      "response_format": {"type": "json_object"},
+                      "temperature": 0.2,
+                      "max_tokens": self.max_tokens},
+                timeout=self.timeout)
+            resp.raise_for_status()
+            data = resp.json()["choices"][0]["message"]["content"]
+            causes = json.loads(data).get("causes", [])
+            return [(str(c.get("proposition", "")),
+                     float(c.get("confidence", 0.5))) for c in causes
+                    if c.get("proposition")]
+        except Exception:  # noqa: BLE001 LLM 不可用 → 空提议
+            return []
 
 
 class DeepSeekExtractor:

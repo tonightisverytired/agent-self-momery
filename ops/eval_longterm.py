@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 """中文长期能力评测：temporal / multi_hop / update / abstain / paraphrase。
 
+item 自带 "mode" 字段时优先于全局 --mode，缺省回退全局参数；
+总体数字（overall / by_ability）口径不变。
+
 运行（验收方执行）：
   py tools/eval_longterm.py --bge-m3              # 自包含语料（内存库）
   py tools/eval_longterm.py --bge-m3 --mode quad
@@ -93,6 +96,8 @@ def build_query(item):
 
 
 def score_item(mem, item, k=5, mode="triple"):
+    # item 自带 mode 优先，缺省回退全局 --mode
+    mode = item.get("mode") or mode
     hits = mem.recall(build_query(item), k=k, mode=mode,
                       node_types=("event",))
     names = {h.name for h in hits}
@@ -147,7 +152,7 @@ def main():
         },
         "items": rows,
     }
-    out_path = os.path.join(ROOT, "simulation", "longterm_eval_result.json")
+    out_path = os.path.join(ROOT, "ops", "data", "longterm_eval_result.json")
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)

@@ -8,7 +8,7 @@ from dnamemory.extract import FallbackExtractor
 @pytest.fixture()
 def client():
     from fastapi.testclient import TestClient
-    from app.dnamemory_server import create_app
+    from server.api.app import create_app
     app = create_app(token="secret-token",
                      extractor=FallbackExtractor())
     return TestClient(app)
@@ -34,6 +34,9 @@ def test_write_recall_forget_roundtrip(client):
     assert r2.status_code == 200
     items = r2.json()["items"]
     assert items and any("预算" in h["name"] for h in items)
+    hit = next(h for h in items if "预算" in h["name"])
+    assert "lexical" in hit["sources"]
+    assert hit["path_scores"]["lexical"]["score"] > 0
 
     target = data["ids"][0]
     r3 = client.post("/forget", json={"target": target, "reason": "retracted"},
@@ -51,7 +54,7 @@ def test_error_mapping_and_validation(client):
                                      "reason": "retracted"},
                     headers=headers)
     assert r.status_code == 404
-    assert r.json()["detail"]["code"] == "E006"
+    assert r.json()["code"] == "E006"
 
     r2 = client.post("/recall", json={"text": "x", "mode": "badmode"},
                      headers=headers)
@@ -59,6 +62,6 @@ def test_error_mapping_and_validation(client):
 
 
 def test_mcp_server_factory():
-    from app.dnamemory_mcp import create_server
+    from server.mcp import create_server
     server = create_server()
     assert server.name == "dnamemory_mcp"

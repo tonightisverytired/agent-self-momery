@@ -366,7 +366,7 @@ def main():
                   "neo4j_vs_sqlite": neo4j_graph_ok},
     }
 
-    out = os.path.join(ROOT, "simulation", "backend_compare_result.json")
+    out = os.path.join(ROOT, "ops", "data", "backend_compare_result.json")
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)

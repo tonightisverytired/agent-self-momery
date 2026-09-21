@@ -1,0 +1,39 @@
+# dnamemory PostgreSQL 存储后端（可选组件）
+#
+# 不设 DNAMEMORY_DSN 时系统仍用 SQLite（默认、零配置）；本文件只在需要 PG 时使用。
+#
+# 启动：docker compose -f docker-compose.pg.yml up -d
+# 连接：postgresql://dnatest:dnatest@127.0.0.1:5433/dnamemory
+# 停止：docker compose -f docker-compose.pg.yml down
+# 连同数据卷一起删：docker compose -f docker-compose.pg.yml down -v
+#
+# 说明：
+# - 端口用 5433，因为 5432 常被本机其它 Postgres 占用（如 hindsight-db）。
+# - 镜像必须是 pgvector/pgvector：裸 postgres 镜像不含 vector 扩展，向量检索会直接失败。
+# - locale=C 是有意为之：时间戳以 TEXT 存 ISO-8601，时间窗查询依赖「字节序 == 时间序」，
+#   与 SQLite 的字典序语义保持一致；换 collation 会改变比较结果。
+
+services:
+  pg:
+    image: pgvector/pgvector:pg17
+    container_name: dnamemory-pg
+    environment:
+      POSTGRES_USER: dnatest
+      POSTGRES_PASSWORD: dnatest
+      POSTGRES_DB: dnamemory
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    ports:
+      - "5433:5432"
+    volumes:
+      - dnamemory_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dnatest -d dnamemory"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  dnamemory_pg_data:
+    name: dnamemory_pg_data

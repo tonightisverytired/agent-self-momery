@@ -92,7 +92,7 @@ def test_quad_sparse_path_adds_hits_and_degrades_gracefully():
         "项目预算会议": ([0.9, 0.7, 0.0, 0.0], {"预算": 0.8, "会议": 0.5}),
         "周末爬山": ([0.0, 1.0, 0.0, 0.0], {"爬山": 1.0}),
         "买菜做饭": ([0.2, 0.1, 0.0, 0.0], {"买菜": 1.0, "做饭": 0.6}),
-        "今天买菜做饭": ([0.0, 0.0, 0.2, 0.1], {"买菜": 1.0, "做饭": 0.6}),
+        "晚上吃什么": ([0.0, 0.0, 0.2, 0.1], {"买菜": 1.0, "做饭": 0.6}),
     }
     emb = SparseEmbedder(vectors)
     mem = MemorySystem(embedder=emb)
@@ -106,7 +106,8 @@ def test_quad_sparse_path_adds_hits_and_degrades_gracefully():
                                vectors["周末爬山"][1], "fake/sparse", 4)
     mem.store.set_node_vectors(cid, vectors["买菜做饭"][0],
                                vectors["买菜做饭"][1], "fake/sparse", 4)
-    q = RecallQuery(text="今天买菜做饭")
+    # 查询与节点名零词面重叠：词面路不命中，隔离稀疏路增益
+    q = RecallQuery(text="晚上吃什么")
     triple = {h.node_id for h in mem.recall(q, k=5, mode="triple",
                                             node_types=("event",))}
     quad = {h.node_id for h in mem.recall(q, k=5, mode="quad",
@@ -182,7 +183,7 @@ def test_write_fuzzy_endpoint_match(tmp_path):
                         confidence=0.9),
     ])
     res = mem.write_many(["张总负责项目A"], extractor=ex)
-    assert res.accepted == 3
+    assert res.accepted == 4  # 2 实体 + 1 边 + 批级自动证据（IA-1）
     assert not res.rejected
     nodes = {n.nid: n for n in mem.store.fetch_nodes()}
     zhang = next(n for n in nodes.values() if n.name == "张总")
@@ -203,6 +204,6 @@ def test_fuzzy_no_match_still_drops():
                         name="张总-完全无关", rel="mentions"),
     ])
     res = mem.write_many(["x"], extractor=ex)
-    assert res.accepted == 1
+    assert res.accepted == 2  # 实体 + 批级自动证据（IA-1）
     assert any(t == "edge" and "端点不存在" in r for t, r in res.rejected)
     mem.close()

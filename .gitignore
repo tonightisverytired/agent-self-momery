@@ -3,7 +3,7 @@ __pycache__/
 .pytest_cache/
 .pytest_tmp/
 .venv/
-simulation/
+ops/data/
 *.egg-info/
 *.db
 *.db-shm
@@ -11,3 +11,11 @@ simulation/
 data/*.db
 data/*.db-shm
 data/*.db-wal
+data/*.jsonl.gz
+# 外部基准数据（PerLTQA-zh，来源见 docs/改进方案-召回相关度解释度.md §5，可重拉）
+data/perltmem_zh.json
+data/perltqa_zh.json
+
+# 项目配置：含 token，不入库（模板见 dnamemory.env.example）
+dnamemory.env
+.env
