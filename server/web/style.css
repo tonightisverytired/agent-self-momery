@@ -499,27 +499,93 @@ main { display: block; }
 .gov-group.danger { border-color: rgba(229, 72, 77, 0.4); }
 .gov-group.danger h3 { color: var(--danger); }
 
-/* ---------- 人物聚合视图（0.8.2） ---------- */
+/* ---------- 人物名片视图（重设计） ---------- */
 .people-layout {
-  display: grid; grid-template-columns: 240px 1fr; gap: 14px;
+  display: grid; grid-template-columns: 250px 1fr; gap: 14px;
   align-items: start;
 }
 .people-list {
   background: var(--panel); border: 1px solid var(--border);
   border-radius: 10px; padding: 10px;
-  max-height: 70vh; overflow: auto;
+  max-height: 76vh; overflow: auto;
+  position: sticky; top: 12px;
 }
 .people-list input { width: 100%; margin-bottom: 8px; }
-.people-item {
-  display: flex; justify-content: space-between; padding: 7px 9px;
-  border-radius: 6px; cursor: pointer; font-size: 13px;
+.p-item {
+  display: flex; align-items: center; gap: 9px; padding: 7px 9px;
+  border-radius: 8px; cursor: pointer; font-size: 13px;
+  border-left: 2px solid transparent;
 }
-.people-item:hover { background: #0e1320; }
-.people-item.on { background: #0e1320; border-left: 2px solid var(--accent); }
-.people-item i { color: var(--muted); font-style: normal; font-size: 12px; }
-.people-detail { min-width: 0; }
-.people-head {
-  display: flex; justify-content: space-between; align-items: center;
-  margin-bottom: 10px;
+.p-item:hover { background: #0e1320; }
+.p-item.on { background: #0e1320; border-left-color: var(--accent); }
+.p-item-name { flex: 1; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.p-item i { color: var(--muted); font-style: normal; font-size: 12px; }
+.p-dup {
+  color: var(--muted); font-size: 11px; border: 1px solid var(--border);
+  border-radius: 999px; padding: 0 6px; flex: none;
 }
-.people-head b { font-size: 17px; }
+.p-toggle {
+  display: block; color: var(--muted); font-size: 12px;
+  padding: 8px 4px 2px; cursor: pointer;
+}
+.p-toggle input { vertical-align: -2px; margin-right: 4px; }
+.p-avatar {
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%; border: 1px solid; flex: none;
+  font-weight: 600; user-select: none;
+}
+.p-avatar.sm { width: 26px; height: 26px; font-size: 13px; }
+.p-avatar.lg { width: 64px; height: 64px; font-size: 30px; }
+.people-detail {
+  min-width: 0; background: var(--panel); border: 1px solid var(--border);
+  border-radius: 10px; padding: 16px 18px;
+}
+.p-hero {
+  display: flex; gap: 16px; align-items: flex-start;
+  padding-bottom: 14px; margin-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.p-hero-main { flex: 1; min-width: 0; }
+.p-hero-name {
+  font-size: 20px; font-weight: 600; display: flex;
+  align-items: center; gap: 12px; margin-bottom: 6px;
+}
+.p-hero-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.p-hero-stats { color: var(--muted); font-size: 12px; margin-top: 8px; }
+.p-chip {
+  display: inline-block; background: #0e1320; border: 1px solid var(--border);
+  border-radius: 999px; padding: 2px 10px; font-size: 12px; margin: 1px 2px;
+}
+.p-facts { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 18px; }
+.p-fact { display: flex; gap: 10px; padding: 4px 0; font-size: 13px;
+  border-bottom: 1px dashed rgba(42, 51, 72, .6); }
+.p-fact-k { color: var(--muted); flex: none; width: 72px; }
+.p-fact-v { flex: 1; min-width: 0; }
+.p-rel { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 18px;
+  margin-bottom: 8px; }
+.p-rel-row { display: flex; align-items: center; gap: 8px; padding: 4px 0;
+  font-size: 13px; }
+.p-rel-what { color: var(--muted); font-size: 12px; }
+.p-people-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.p-person-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: #0e1320; border: 1px solid var(--border);
+  border-radius: 999px; padding: 3px 12px 3px 3px; font-size: 12px;
+}
+.p-tl-year {
+  color: var(--accent); font-weight: 600; font-size: 13px;
+  margin: 10px 0 2px; padding-left: 2px;
+}
+.p-tl-ev { border-left: 2px solid var(--border); margin-left: 6px;
+  padding: 2px 0 2px 12px; }
+.p-tl-ev summary {
+  cursor: pointer; font-size: 13px; padding: 3px 0; list-style: none;
+}
+.p-tl-ev summary::before { content: "▸ "; color: var(--muted); }
+.p-tl-ev[open] summary::before { content: "▾ "; }
+.p-tl-date { color: var(--muted); font-size: 12px; margin-right: 8px; }
+.p-tl-desc {
+  color: var(--muted); font-size: 12.5px; line-height: 1.7;
+  padding: 4px 0 8px 14px;
+}

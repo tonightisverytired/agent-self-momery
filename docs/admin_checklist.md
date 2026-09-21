@@ -8,6 +8,8 @@
 
 ```powershell
 dnamemory-server --path user_memory.db --token demo --fallback-extractor
+# --fallback-extractor：确定性兜底（本清单复现用）；配置了 DEEPSEEK_API_KEY 时
+# 去掉该参数即默认启用「LLM 优先 + 失败兜底」抽取链
 # 浏览器打开 http://127.0.0.1:8000/
 ```
 

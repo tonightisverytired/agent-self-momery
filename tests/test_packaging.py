@@ -14,14 +14,14 @@ ROOT = Path(__file__).resolve().parent.parent
 def test_import_server_package():
     import dnamemory
     import server
-    assert dnamemory.__version__ == "0.8.2"
+    assert dnamemory.__version__ == "0.8.3"
     assert hasattr(server, "__file__") or hasattr(server, "__path__")
 
 
 def test_pyproject_version_and_scripts():
     data = tomllib.loads(
         (ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    assert data["project"]["version"] == "0.8.2"
+    assert data["project"]["version"] == "0.8.3"
     scripts = data["project"]["scripts"]
     assert scripts["dnamemory"] == "dnamemory.cli:main"
     assert scripts["dnamemory-server"] == "server.main:main"
@@ -51,4 +51,4 @@ def test_cli_version_080():
         [sys.executable, "-m", "dnamemory.cli", "--version"],
         capture_output=True, text=True, env=env, cwd=str(ROOT))
     assert out.returncode == 0
-    assert "0.8.2" in (out.stdout + out.stderr)
+    assert "0.8.3" in (out.stdout + out.stderr)

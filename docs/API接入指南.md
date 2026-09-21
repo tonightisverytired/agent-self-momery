@@ -168,6 +168,6 @@ timeline / explain / stats / write_structured / govern），与 HTTP 端点同�
 |---|---|
 | 401 `E401` | token 缺失或错误；确认配置文件里的 `DNAMEMORY_TOKEN` 与请求头一致 |
 | 422 `E422` | 请求体字段非法：枚举值不在允许集内（见 api.md 的枚举校验）或缺少必填字段 |
-| 400 `E010` | 文本抽取写入需要 extractor：启动加 `--fallback-extractor` 或配置 `DEEPSEEK_API_KEY` |
+| 400 `E010` | 文本抽取写入需要 extractor：配置 `DEEPSEEK_API_KEY`（默认自动启用 LLM+兜底链）或启动加 `--fallback-extractor`（确定性兜底） |
 | 浏览器报 CORS | 前端所在源未加入 `DNAMEMORY_CORS_ORIGINS` |
 | 改了配置没生效 | 已存在的环境变量优先于配置文件；先 `unset` 同名环境变量再重启 |

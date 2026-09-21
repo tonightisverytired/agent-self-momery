@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dnamemory"
-version = "0.8.2"
+version = "0.8.3"
 description = "长期个人智能体记忆系统：带类型关联边记忆库（可嵌入、可调用、配置在调用层）"
 requires-python = ">=3.10"
 dependencies = ["pydantic>=2.10"]

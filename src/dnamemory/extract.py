@@ -536,3 +536,38 @@ class FallbackExtractor:
 
     def extract_many(self, texts, meta=None, batch_size=20):
         return [self.extract(t) for t in texts]
+
+
+class ChainedExtractor:
+    """LLM 优先 + 失败/空结果兜底（0.8.3 写入侧加固）。
+
+    在线服务默认形态：DeepSeek 可用时做完整结构化抽取；API 故障、
+    余额耗尽或对短文本零产出时退回 FallbackExtractor，保证「教它东西」
+    永远至少留下一条带写入时间的原文事件，不再"写了等于没写"。
+    """
+
+    def __init__(self, primary, fallback):
+        self.primary = primary
+        self.fallback = fallback
+
+    def extract(self, text, meta=None):
+        try:
+            cands = self.primary.extract(text, meta)
+        except Exception:  # noqa: BLE001 网络/鉴权/解析任何失败都兜底
+            cands = None
+        if not cands:
+            return self.fallback.extract(text, meta)
+        return cands
+
+    def extract_many(self, texts, meta=None, batch_size=20):
+        try:
+            batches = self.primary.extract_many(list(texts), meta or {},
+                                                batch_size=batch_size)
+        except Exception:  # noqa: BLE001
+            batches = None
+        # 主抽取器失败或整批零产出时整体兜底；部分空批保持原样
+        # （LLM 判定该批无可存内容，批边界与兜底器不一致，不做逐批混合）
+        if not batches or all(not b for b in batches):
+            return self.fallback.extract_many(list(texts), meta or {},
+                                              batch_size=batch_size)
+        return batches

@@ -18,12 +18,12 @@ START = datetime(2026, 3, 1)
 
 # ---------------- A-01-T 版本 ----------------
 def test_version():
-    assert __version__ == "0.8.2"
+    assert __version__ == "0.8.3"
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     with open(os.path.join(root, "pyproject.toml"), encoding="utf-8") as f:
         text = f.read()
     m = re.search(r'^version\s*=\s*"([^"]+)"', text, re.M)
-    assert m and m.group(1) == "0.8.2"
+    assert m and m.group(1) == "0.8.3"
 
 
 # ---------------- J-01-T 五档 source_rank ----------------

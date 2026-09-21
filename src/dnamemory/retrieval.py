@@ -28,19 +28,29 @@ def _access_allowed(node, filters):
 
 
 def _time_path(store, t0, tol):
-    """时间路：SQL 索引预筛（窗口放宽 ±(tol+2) 天）+ Python 精确复算。"""
+    """时间路：SQL 索引预筛（窗口放宽 ±(tol+2) 天）+ Python 精确复算。
+
+    ts（事件发生时间）为空时回退 created_at（写入时间）：「教它东西」
+    类写入未提时间时 ts 保持 NULL（不编造发生时间），但「上周聊了什么」
+    应能命中上周写入的记忆——写入时间是唯一可用的真实时间锚点。
+    回退锚定的命中分值减半：真实发生时间优先于写入时间，避免批量
+    注入（created_at 挤在同一天）淹没时间路。diff 按日历日计，消除
+    「00:00 记的事件 vs 15:23 的昨天」被 .days 向下取整多算一天的偏差。
+    """
     out = {}
     lo = t0 - timedelta(days=tol + 2)
     hi = t0 + timedelta(days=tol + 2)
     rows = store.read(
-        "SELECT id, ts FROM nodes WHERE node_type='event' "
-        "AND ts IS NOT NULL AND ts >= ? AND ts <= ? ORDER BY id",
+        "SELECT id, ts, created_at FROM nodes WHERE node_type='event' "
+        "AND COALESCE(ts, created_at) >= ? AND COALESCE(ts, created_at) <= ? "
+        "ORDER BY id",
         (lo.isoformat(), hi.isoformat()))
-    for nid, ts_text in rows:
-        ts = datetime.fromisoformat(ts_text)
-        diff = abs((ts - t0).days)
+    for nid, ts_text, created_text in rows:
+        fallback = ts_text is None
+        anchor = datetime.fromisoformat(ts_text or created_text)
+        diff = abs((anchor.date() - t0.date()).days)
         if diff <= tol:
-            out[nid] = 1.0 / (1.0 + diff)
+            out[nid] = 0.5 / (1.0 + diff) if fallback else 1.0 / (1.0 + diff)
     return out
 
 

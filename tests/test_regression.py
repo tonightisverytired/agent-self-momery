@@ -272,7 +272,7 @@ def test_version_070():
     from pathlib import Path
 
     import dnamemory
-    assert dnamemory.__version__ == "0.8.2"
+    assert dnamemory.__version__ == "0.8.3"
     pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
     data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-    assert data["project"]["version"] == "0.8.2"
+    assert data["project"]["version"] == "0.8.3"

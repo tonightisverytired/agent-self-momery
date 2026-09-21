@@ -3,7 +3,7 @@ from .memory import MemorySystem
 from .models import (MemoryConfig, MemoryHit, RecallFilters, RecallQuery,
                      RelationFilter)
 
-__version__ = "0.8.2"
+__version__ = "0.8.3"
 
 __all__ = ["MemorySystem", "MemoryConfig", "RecallQuery", "RecallFilters",
            "RecallQuery", "RelationFilter", "MemoryHit", "__version__"]

@@ -328,6 +328,9 @@ class MemorySystem:
         # 不污染调用方 dict；下划线前缀避免与用户键冲突。
         meta = dict(meta or {})
         meta["_raw_text"] = text
+        # 自动注入当前日期：抽取器据此把「昨天/上周一」等相对时间换算成
+        # 具体日期填入 ts；调用方显式传入的 today 优先（离线注入可复现）。
+        meta.setdefault("today", self.clock().date().isoformat())
         cands = ex.extract(text, meta)
         ids, dropped = self._write_candidates(cands, meta)
         return WriteResult(accepted=len(ids), rejected=dropped, ids=ids)
@@ -338,10 +341,12 @@ class MemorySystem:
         if ex is None:
             raise ValidationError("E010 抽取器未注入")
         texts = list(texts)
+        meta = dict(meta or {})
+        meta.setdefault("today", self.clock().date().isoformat())
         if hasattr(ex, "extract_many"):
-            batches = ex.extract_many(texts, meta or {}, batch_size=batch_size)
+            batches = ex.extract_many(texts, meta, batch_size=batch_size)
         else:
-            batches = [ex.extract(t, meta or {}) for t in texts]
+            batches = [ex.extract(t, meta) for t in texts]
         # 每批 meta 注入该批原文摘要：先按 batch_size 对齐 extract_many 的
         # 标准分批；批数不符（如逐条兜底抽取器）则按批数均分兜底。
         chunks = [texts[i:i + batch_size]
@@ -368,8 +373,14 @@ class MemorySystem:
         local = dict(self._name2id)
         entity_local = {}
         for n in self.store.fetch_nodes():
-            if n.node_type == "entity":
-                entity_local[n.name] = n.nid
+            # 写入侧实体消解的规范锚点：跳过墓碑/删除节点；同名取最低 id
+            # （setdefault 先到先得），让事实/边/观点都向规范节点收敛
+            if n.node_type == "entity" \
+                    and n.lifecycle not in ("tombstoned", "deleted"):
+                entity_local.setdefault(n.name, n.nid)
+        # 实体名字一律拨正到规范节点：_name2id 是后者覆盖（指向最后建的
+        # 重复节点），不拨正的话事实/边会绕过消解继续落到重复节点上
+        local.update(entity_local)
         with self.store.transaction() as conn:
             meta = meta or {}
             rec = meta.get("recorded_at")
@@ -438,6 +449,20 @@ class MemorySystem:
                     local[c.name] = nid
                     embed_queue.append((nid, c.name))
                 elif c.type == "entity":
+                    existing = entity_local.get(c.name)
+                    if existing is not None:
+                        # 实体消解治本：同名实体复用规范节点，不再重复建点
+                        # （此前每批注入都给「李明」新建节点：1715 节点/554 名）。
+                        # 旧节点描述为空且候选带描述时回填；向量保持名字级不重建。
+                        nid = existing
+                        if c.value:
+                            conn.execute(
+                                "UPDATE nodes SET description=? WHERE id=? "
+                                "AND (description IS NULL OR description='')",
+                                (c.value, nid))
+                        ids.append(nid)
+                        local[c.name] = nid
+                        continue
                     nid = self.store.insert_node(
                         "entity", c.kind or "concept", c.name,
                         c.value or "", None, 0.7, c.protected, "public",

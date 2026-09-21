@@ -53,18 +53,19 @@ def _entity_current_facts(memory, entity):
 
     与 fact_lookup 同口径（节点非 tombstoned/deleted、事实未墓碑、未失效），
     差异只在 key 维度不做匹配——留空 key 时不再落到空结果。
-    名字解析复用 memory._name2id，与 fact_lookup 同源（含实体消解后的指向）。
+    同名节点合并：批量注入会为不同故事里出现的同名人物各建节点，
+    浏览口径按名字聚合所有 active 节点的事实（召回侧 fact_lookup 不受影响）。
     """
-    nid = memory._name2id.get(entity)
-    if nid is None:
-        return []
     nodes = memory.store.fetch_nodes()
-    node = next((n for n in nodes if n.nid == nid), None)
-    if node is None or node.lifecycle in ("tombstoned", "deleted"):
+    nids = [n.nid for n in nodes
+            if n.name == entity and n.node_type == "entity"
+            and n.lifecycle not in ("tombstoned", "deleted")]
+    if not nids:
         return []
     now = memory.clock()
+    nid_set = set(nids)
     items = [f for f in memory.store.fetch_facts()
-             if f.node_id == nid and not f.tombstoned
+             if f.node_id in nid_set and not f.tombstoned
              and (f.invalid_at is None or f.invalid_at > now)]
     items.sort(key=lambda f: (f.key, f.fid))
     return items

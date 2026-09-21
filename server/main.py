@@ -59,7 +59,19 @@ def main():
     if not token:
         parser.error("需要 --token 或环境变量 DNAMEMORY_TOKEN")
     import uvicorn
-    extractor = FallbackExtractor() if args.fallback_extractor else None
+    # 抽取器接线：--fallback-extractor 强制确定性兜底（离线/测试）；
+    # 默认有 DEEPSEEK_API_KEY 时启用 LLM 优先 + 失败兜底链，否则 None
+    # （写入报 E010，保持显式）。
+    if args.fallback_extractor:
+        extractor = FallbackExtractor()
+        print("[extractor] fallback（确定性兜底）", flush=True)
+    elif os.environ.get("DEEPSEEK_API_KEY"):
+        from dnamemory.extract import ChainedExtractor, DeepSeekExtractor
+        extractor = ChainedExtractor(DeepSeekExtractor(), FallbackExtractor())
+        print("[extractor] DeepSeek 优先 + fallback 兜底", flush=True)
+    else:
+        extractor = None
+        print("[extractor] 未配置（写入将报 E010）", flush=True)
     embedder = None
     if args.bge_m3:
         from dnamemory.embeddings import BGEM3Embedder
