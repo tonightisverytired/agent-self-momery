@@ -6,6 +6,13 @@
 
   const DESTRUCTIVE = new Set(["forget", "compress-stable", "reflect",
                                "restore", "step-day"]);
+  const CONFIRM_TEXT = {
+    "forget": "忘掉后仍可在「治理」页按编号恢复。确认忘掉？",
+    "compress-stable": "压缩会把长期稳定的信息合并，确认执行？",
+    "reflect": "将为指定年月生成一份总结，确认执行？",
+    "restore": "将恢复该编号的记忆，确认执行？",
+    "step-day": "将让所有记忆「过一天」：不重要的会淡忘。确认执行？",
+  };
 
   function showResult(html, data) {
     lastData = data;
@@ -34,35 +41,35 @@
     switch (action) {
       case "resolve-conflicts": {
         const ds = data.decisions || [];
-        return `<table class="table"><thead><tr><th>类型</th><th>节点</th>
-          <th>key</th><th>胜者</th><th>败者</th></tr></thead>
+        return `<table class="table"><thead><tr><th>类别</th><th>编号</th>
+          <th>事项</th><th>保留</th><th>舍弃</th></tr></thead>
           <tbody>${decisionRows(ds)}</tbody></table>`;
       }
       case "resolve-entities": {
         const n = data.merged || 0;
-        return `<div class="fact-card">实体消解：合并
-          <span class="hero-num">${fmt.num(n)}</span> 组</div>`;
+        return `<div class="fact-card">合并了
+          <span class="hero-num">${fmt.num(n)}</span> 组重复的人</div>`;
       }
       case "derive-impact-links": {
         const ls = data.links || [];
         return ls.length
-          ? `<div class="fact-card">新增影响链
-             <span class="hero-num">${ls.length}</span> 条</div>`
-          : '<div class="fact-card">幂等：<span class="hero-num">0</span> 条新增</div>';
+          ? `<div class="fact-card">梳理出
+             <span class="hero-num">${ls.length}</span> 条影响</div>`
+          : '<div class="fact-card">没有新影响可梳理（幂等）</div>';
       }
       case "extract-patterns": {
         const n = data.patterns || 0;
-        return `<div class="fact-card">模式提取：本次生成
-          <span class="hero-num">${fmt.num(n)}</span> 条新模式</div>`;
+        return `<div class="fact-card">发现了
+          <span class="hero-num">${fmt.num(n)}</span> 条习惯规律</div>`;
       }
       case "step-day": {
         const as = data.archived || [];
-        return `<div class="fact-card">归档
-          <span class="hero-num">${as.length}</span> 条记忆</div>`;
+        return `<div class="fact-card">淡忘了
+          <span class="hero-num">${as.length}</span> 条不重要的记忆</div>`;
       }
       case "reflect": {
-        return `<div class="fact-card">月度反射完成
-          <span class="hero-num">summary_id = ${fmt.num(data.summary_id)}</span></div>`;
+        return `<div class="fact-card">月度总结完成
+          <span class="hero-num">编号 ${fmt.num(data.summary_id)}</span></div>`;
       }
       case "compress-stable": {
         const cs = data.created || [];
@@ -71,11 +78,11 @@
       }
       case "restore": {
         return `<div class="fact-card">${badge("ok", "b-ok")}
-          节点已恢复</div>`;
+          已恢复</div>`;
       }
       case "forget": {
         return `<div class="fact-card">${badge("ok", "b-ok")}
-          遗忘完成（reason 记录在库）</div>`;
+          已忘掉（原因已记录）</div>`;
       }
       default:
         return "";
@@ -84,7 +91,7 @@
 
   async function runGovern(action) {
     if (DESTRUCTIVE.has(action)
-        && !confirm(`确认执行治理操作 ${action} ？`)) return;
+        && !confirm(CONFIRM_TEXT[action] || `确认执行 ${action} ？`)) return;
     try {
       let body = {};
       let url = "/" + action;

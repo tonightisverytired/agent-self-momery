@@ -33,7 +33,11 @@ def main():
     parser.add_argument("--fallback-extractor", action="store_true",
                         help="注入确定性兜底抽取器，/write 开箱可测")
     parser.add_argument("--bge-m3", action="store_true",
-                        help="加载本地缓存的 bge-m3 模型，启用真实语义路")
+                        help="加载本地缓存的 bge-m3 模型，启用真实语义路"
+                             "（DNAMEMORY_BGE_PATH 可指定本地目录）")
+    parser.add_argument("--reranker", action="store_true",
+                        help="加载 bge-reranker-v2-m3 交叉编码器重排"
+                             "（DNAMEMORY_RERANKER_PATH 可指定本地目录）")
     parser.add_argument("--config", default=None,
                         help="配置文件路径（默认 ./dnamemory.env 或 "
                              "DNAMEMORY_CONFIG）")
@@ -59,9 +63,17 @@ def main():
     embedder = None
     if args.bge_m3:
         from dnamemory.embeddings import BGEM3Embedder
-        embedder = BGEM3Embedder()
+        # 本地目录直通（os.path.isdir）或 HF 缓存/下载；生产建议用
+        # DNAMEMORY_BGE_PATH 指向本地模型目录
+        embedder = BGEM3Embedder(model_name=os.environ.get(
+            "DNAMEMORY_BGE_PATH", "BAAI/bge-m3"))
+    reranker = None
+    if args.reranker:
+        from dnamemory.rerank import BGEReranker
+        reranker = BGEReranker(model_name=os.environ.get(
+            "DNAMEMORY_RERANKER_PATH", "BAAI/bge-reranker-v2-m3"))
     app = create_app(path=path, token=token, extractor=extractor,
-                     embedder=embedder, dsn=dsn)
+                     embedder=embedder, reranker=reranker, dsn=dsn)
     uvicorn.run(app, host=host, port=port)
 
 

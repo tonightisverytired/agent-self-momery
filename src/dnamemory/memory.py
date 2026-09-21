@@ -827,6 +827,18 @@ class MemorySystem:
         if not nids:
             notes.append("未命中相关记忆：下面是库中当前状态，"
                          "不是对本次问题的回答")
+        # 时间锚点落空明示（0.8.2）：查询含时间表达（显式时间/「上周」等
+        # 已被识别）但时间路零命中时，沉默地退回其它路径会让用户以为
+        # 「上周的记忆就是这些」——必须显式告知时间窗内无记忆
+        else:
+            from .retrieval import _extract_monthday, _extract_query_time
+            has_time_anchor = bool(query.time) \
+                or _extract_query_time(query.text, now) is not None \
+                or _extract_monthday(query.text) is not None
+            time_hit = any("time" in (h.path_scores or {}) for h in hits)
+            if has_time_anchor and not time_hit:
+                notes.append("查询涉及的时间范围内没有记忆"
+                             "（时间表达已识别，但该时间窗内无事件）")
         state.impacts = [i for i in state.impacts
                          if i.subject_id in nids]
         state.patterns = [p for p in state.patterns
@@ -876,12 +888,24 @@ class MemorySystem:
         coherence = CrossDimensionCoherence(self.config)
         coh = coherence.check(state)
         # 0.8.1 IA-4：一致性解释（中文说明）追加进 notes——原先生成后即
-        # 丢弃，调用方看不到「为什么判冲突」；去重并限 3 条防爆量
+        # 丢弃，调用方看不到「为什么判冲突」；去重并限 3 条防爆量。
+        # 0.8.2：只收查询在场地的冲突解释——全库一致性检查会对无关主体
+        # 报冲突，原样透出会把「实体 7253 的 award 并列」这类噪声塞进
+        # 无关问题的响应
         added_expl = 0
-        for expl in (coh.explanations or []):
+        for c, expl in zip(coh.conflicts or [], coh.explanations or []):
             if added_expl >= 3:
                 break
+            c_nid = c.get("node_id") if isinstance(c, dict) \
+                else getattr(c, "node_id", None)
+            if c_nid is not None and nids and c_nid not in nids:
+                continue
             if expl and expl not in notes:
+                # 裸节点 id 换成节点名（「实体 7274」→「张小红」），
+                # 并列值去重显示（LLM 层重复事实会打出 打篮球×2 式噪声）
+                cn = nodes.get(c_nid)
+                if cn is not None and cn.name:
+                    expl = expl.replace(f"实体 {c_nid}", f"「{cn.name}」", 1)
                 notes.append(expl)
                 added_expl += 1
         # 7) 上下文组装（current_state 按状态层分项分排序；

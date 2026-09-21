@@ -34,9 +34,12 @@ class CrossDimensionCoherence:
                               or "fact_conflict",
                               "node_id": nid, "key": key,
                               "facts": list(values)})
+            # 展示层去重：LLM 层可能写入同值重复事实，并列候选里
+            # 「打篮球、摄影、打篮球、摄影」应显示为两个值
+            shown = list(dict.fromkeys(str(v) for v in values))
             explanations.append(
-                f"实体 {nid} 的属性 {key} 有 {len(values)} 个并列候选："
-                f"{'、'.join(str(v) for v in values)}")
+                f"实体 {nid} 的属性 {key} 有 {len(shown)} 个并列候选："
+                f"{'、'.join(shown)}")
         # 兼容手工构造的 MemoryState（current_facts 里有同 key 多值）：
         # 该状态在管线里不可达，仅为直接构造 state 的调用方保留
         groups = {}

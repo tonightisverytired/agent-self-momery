@@ -4,9 +4,11 @@
 (function () {
   let chart = null;
   let tableRequested = false;   // 用户手动切到「数据视图」（区别于 CDN 降级）
+  const FULL_GRAPH_MAX_NODES = 800;   // 超过则默认进引导态，不自动全图
   let state = {
     data: null,          // /graph 响应
     subMode: false,
+    forceFull: false,    // 用户显式「仍要加载全图」
     hiddenRels: new Set(),
     hiddenTypes: new Set(),
     hideOrphans: false,
@@ -219,13 +221,14 @@
 
   async function enterSubgraph() {
     const center = $("sub-center").value.trim();
-    if (!center) { toast("请输入中心节点名", true); return; }
+    if (!center) { toast("请输入中心节点名", true); return false; }
     const hops = parseInt($("sub-hops").value || "2", 10);
-    state.data = await fetchGraph({ center, hops, limit: 500 });
-    if (!state.data.center.matched) {
+    const data = await fetchGraph({ center, hops, limit: 500 });
+    if (!data.center.matched) {
       toast(`未找到节点「${center}」`, true);
-      return;
+      return false;
     }
+    state.data = data;
     state.subMode = true;
     $("sub-banner").textContent =
       `子图：以「${center}」为中心 ${hops} 跳 · ${state.data.nodes.length} 节点` +
@@ -233,6 +236,7 @@
     $("sub-banner").classList.remove("hidden");
     $("sub-exit").classList.remove("hidden");
     afterDataLoaded();
+    return true;
   }
   async function exitSubgraph() {
     state.subMode = false;
@@ -249,8 +253,17 @@
       return;
     }
     if (tableRequested) { renderGraphTables(); return; }
-    // echarts 尚在加载：给占位提示（否则首屏是纯空白画布）
+    // 引导态进子图时 chart 尚未初始化：echarts 就绪则补建，未就绪则
+    // 等加载完成后补建（原先只显示加载占位，子图数据回来了也永远不画）
+    if (window.echarts) { initChart(); return; }
     showChartLoading("正在加载图表库…");
+    loadEcharts().then(() => {
+      if (!chart && state.data) initChart();
+    }).catch(() => {
+      $("graph-canvas").innerHTML =
+        '<div class="chart-loading">图表库加载失败（CDN 不可达），已降级为表格视图</div>';
+      renderGraphTables();
+    });
   }
 
   function renderGraphTables() {
@@ -267,9 +280,59 @@
     afterDataLoaded();
   }
 
+  /* 大库引导态（0.8.2 前端改造 C）：不默认全图，给中心节点入口与
+   * 枢纽快捷按钮（枢纽 = 权重最高 300 条边中客户端度数 top5）。 */
+  async function showGuidance(total) {
+    let hubs = [];
+    try {
+      const d = await fetchGraph({ limit: 300 }, true);
+      const deg = {};
+      (d.edges || []).forEach(e => {
+        deg[e.from] = (deg[e.from] || 0) + 1;
+        deg[e.to] = (deg[e.to] || 0) + 1;
+      });
+      const nameOf = {};
+      (d.nodes || []).forEach(n => { nameOf[n.id] = n.name; });
+      hubs = Object.entries(deg).sort((a, b) => b[1] - a[1])
+        .slice(0, 5).map(([id]) => nameOf[id]).filter(Boolean);
+    } catch (e) { /* 枢纽建议失败不阻断引导态 */ }
+    $("graph-canvas").innerHTML = `<div class="graph-empty">
+      <p>库内 ${fmt.num(total)} 个节点，默认不加载全图。<br>
+      在上方「子图」输入中心节点名（如人物名）进入 2 跳子图，或从枢纽进入：</p>
+      <div class="hub-row">${hubs.map(n =>
+        `<button class="chip on" data-hub="${esc(n)}">${esc(n)}</button>`
+      ).join("")}<button id="graph-full-anyway" class="chip">
+        仍要加载全图（可能较卡）</button></div>
+    </div>`;
+    document.querySelectorAll("[data-hub]").forEach(b => {
+      b.onclick = () => {
+        $("sub-center").value = b.dataset.hub;
+        enterSubgraph().catch(() => {});
+      };
+    });
+    const full = $("graph-full-anyway");
+    if (full) {
+      full.onclick = () => {
+        state.forceFull = true;
+        refresh({});
+      };
+    }
+  }
+
   async function refresh(params) {
     try {
-      if (!state.data) await loadFull();   // 已有数据则复用（重载用「重新加载」按钮）
+      if (!state.data) {
+        if (!state.forceFull && !(params && params.focus)) {
+          // 大库默认引导态：先轻量探 counts 再决定（0.8.2 前端改造 C）
+          const probeData = await fetchGraph({ limit: 1 }, true);
+          const total = (probeData.counts || {}).nodes || 0;
+          if (total > FULL_GRAPH_MAX_NODES) {
+            await showGuidance(total);
+            return;
+          }
+        }
+        await loadFull();   // 小库/显式全图：保持现状
+      }
     } catch (e) {
       // 网络类错误 apiFetch 已 toast；此处只暴露渲染期异常，不再静默吞掉
       if (e && e.message !== "401" && e.message !== "404") {
@@ -278,7 +341,14 @@
       return;
     }
     if (params && params.focus) {
-      const n = (state.data.nodes || []).find(x => x.name === params.focus);
+      let n = (state.data.nodes || []).find(x => x.name === params.focus);
+      if (!n) {
+        // 当前数据里没有（大库引导态/子图中）：直接以它为心进子图
+        $("sub-center").value = params.focus;
+        if (await enterSubgraph()) {
+          n = (state.data.nodes || []).find(x => x.name === params.focus);
+        }
+      }
       if (n) {
         if (chart) {
           const idx = visibleNodes().indexOf(n);
@@ -288,8 +358,6 @@
           }
         }
         openNodeDrawer(n);
-      } else {
-        toast(`未找到节点「${params.focus}」`, true);
       }
       return;
     }
@@ -332,6 +400,12 @@
     $("graph-search-btn").onclick = () => {
       const q = $("graph-search").value.trim();
       if (!q) { toast("请输入节点名", true); return; }
+      if (!state.data) {
+        // 引导态（尚未加载任何图）：按中心节点进子图
+        $("sub-center").value = q;
+        enterSubgraph().catch(() => {});
+        return;
+      }
       const n = (state.data.nodes || []).find(x => x.name === q);
       if (!n) { toast(`未找到「${q}」`, true); return; }
       if (chart) {

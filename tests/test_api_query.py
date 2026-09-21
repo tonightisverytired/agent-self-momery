@@ -109,3 +109,21 @@ def test_neighbors(tmp_path, client):
     r = client.get("/neighbors", params={"node": "用户"}, headers=AUTH)
     assert r.status_code == 200
     assert isinstance(r.json()["items"], list)
+
+
+def test_entities_list_person(tmp_path, client):
+    """GET /entities：默认按 kind=person 列 active 实体，附事实数降序。"""
+    r = client.get("/entities", headers=AUTH)
+    assert r.status_code == 200
+    data = r.json()
+    assert data["total"] == 1
+    assert data["items"][0]["name"] == "用户"
+    assert data["items"][0]["kind"] == "person"
+    assert data["items"][0]["fact_count"] == 1
+
+
+def test_entities_kind_filter_empty(tmp_path, client):
+    """kind 过滤无匹配时返回空（不 404）。"""
+    r = client.get("/entities", params={"kind": "company"}, headers=AUTH)
+    assert r.status_code == 200
+    assert r.json() == {"total": 0, "items": []}

@@ -129,7 +129,7 @@ dnamemory-server --path user_memory.db --token <token> --bge-m3 --fallback-extra
 - **配置文件**（`.env` 风格，零依赖）：查找顺序 `--config` > `DNAMEMORY_CONFIG` > `./dnamemory.env` > `~/.dnamemory.env`；优先级 **命令行 > 真实环境变量 > 配置文件 > 内置默认**（容器/systemd 注入的值不会被文件覆盖）；只识别 `DNAMEMORY_` / `DEEPSEEK_` 前缀的键。模板见 [dnamemory.env.example](dnamemory.env.example)；
 - **对外提供 API**：改配置文件里的 `DNAMEMORY_HOST=0.0.0.0` 与 `DNAMEMORY_CORS_ORIGINS` 即可，安全清单与调用示例见 [API 接入指南](docs/API接入指南.md)。
 
-- **后台页面**：启动后打开 `http://127.0.0.1:8000/`（零构建静态控制台：侧边栏导航六页——仪表盘（分布横条/最近事件/active 口径）、**记忆图谱**（echarts 力导向节点连线，点击出详情抽屉、子图聚焦、CDN 失败降级为表格）、分面浏览（事实表格/邻接星图/时间线）、查询台（召回表/上下文 16 区块按四组渲染，每块带中文名与释义、空块折叠成一行；评分雷达、影响/因果/冲突条形、时间链与影响链关系图内嵌在对应区块，CDN 不可用时退回文字与内联 SVG）、写入表单（含批量）、治理操作台；token 在页面顶栏配置）；
+- **后台页面**：启动后打开 `http://127.0.0.1:8000/`（零构建静态控制台：侧边栏导航分主功能与高级两组——**问答台**（首页：提问 + 「告诉它一件事」文本记忆 + 事实卡片带 memory_score 分项迷你条）、**人物**（0.8.2：按人聚合——左栏人物列表，右栏画像/关系/经历过的事，解决原子化存储的零散观感）、总览·记忆健康（记忆构成卡/近期治理动作/分布横条/最近事件）、**记忆图谱**（echarts 力导向，大库 >800 节点默认子图引导态，CDN 失败降级表格）、治理（需要确认/日常整理/危险操作三组）；高级：分面浏览、查询台（16 区块）、写入表单；token 在页面顶栏配置）；
 - 端点 31 个（读写全能力）：元数据 `GET /health`、`GET /stats`；查询 `POST /recall`、`POST /context`（16 区块）、`POST /timeline`、`GET /memory/{id}/history`、`GET /memory/{id}/explain`、`GET /facts`、`GET /neighbors`、`GET /graph`（图谱快照：节点/边/分布计数/最近事件，支持 center 子图与 limit 截断）、`GET /audit`（裁决/治理审计查询，0.8.1）；写入 `POST /entities /events /facts /beliefs /intents /impacts /evidence /edges /write /batch`；治理 `POST /forget /resolve-conflicts /confirm /resolve-entities /reflect /compress-stable /extract-patterns /derive-impact-links /step-day /restore`。全表见 [API 文档](docs/api.md)；
 - 鉴权：启动时必须提供 token（`--token` 或 `DNAMEMORY_TOKEN`），请求头 `Authorization: Bearer <token>`；错误体统一 `{code, message}`；
 - Swagger：`http://127.0.0.1:8000/docs`；

@@ -11,12 +11,15 @@
     <aside class="sidebar">
       <div class="side-brand">dnamemory</div>
       <nav id="nav">
-        <a class="nav-item" href="#/dashboard">仪表盘</a>
+        <a class="nav-item" href="#/ask">问答</a>
+        <a class="nav-item" href="#/people">人物</a>
+        <a class="nav-item" href="#/dashboard">总览</a>
         <a class="nav-item" href="#/graph">图谱</a>
+        <a class="nav-item" href="#/govern">治理</a>
+        <div class="nav-sep">高级</div>
         <a class="nav-item" href="#/browser">浏览</a>
         <a class="nav-item" href="#/query">查询</a>
         <a class="nav-item" href="#/write">写入</a>
-        <a class="nav-item" href="#/govern">治理</a>
       </nav>
     </aside>
 
@@ -37,11 +40,54 @@
       </div>
 
       <main>
+        <!-- ============ 问答台（首页） ============ -->
+        <section id="ask-console" class="view" data-view="ask">
+          <h2>问答台</h2>
+          <div class="ask-input-row">
+            <input id="ask-input" placeholder="直接问：我住哪里？／我最近对什么感兴趣？／上次体检怎么样？"
+                   autocomplete="off">
+            <button id="ask-run" class="ask-btn">提问</button>
+          </div>
+          <div class="ask-teach-row">
+            <input id="teach-input" placeholder="也可以直接告诉它一件事：我上周五和王磊去打了篮球"
+                   autocomplete="off">
+            <button id="teach-run">记住</button>
+          </div>
+          <div id="ask-empty" class="ask-empty-hint">
+            上面问问题，下面教它东西。回答里每条记忆都带评分依据。
+          </div>
+          <div id="ask-result" class="hidden"></div>
+        </section>
+
+        <!-- ============ 人物 ============ -->
+        <section id="people-console" class="view" data-view="people">
+          <h2>人物</h2>
+          <div class="people-layout">
+            <div class="people-list">
+              <input id="people-filter" placeholder="搜索名字…" autocomplete="off">
+              <div id="people-items"></div>
+            </div>
+            <div class="people-detail" id="people-detail">
+              <div class="ask-empty-hint">选左边一个人，看看我记得 TA 什么。</div>
+            </div>
+          </div>
+        </section>
+
         <!-- ============ 仪表盘 ============ -->
         <section id="dashboard" class="view" data-view="dashboard">
-          <h2>仪表盘</h2>
+          <h2>仪表盘 · 记忆健康</h2>
           <div id="stat-cards" class="stat-grid"></div>
           <p id="kpi-note" class="kpi-note"></p>
+          <div class="viz-grid">
+            <div class="panel sub">
+              <h3>记忆构成</h3>
+              <div id="dim-cards" class="dim-grid"></div>
+            </div>
+            <div class="panel sub">
+              <h3>近期治理动作</h3>
+              <div id="audit-list"></div>
+            </div>
+          </div>
           <div class="viz-grid">
             <div class="panel sub">
               <h3>节点类型分布</h3>
@@ -177,54 +223,77 @@
 
         <!-- ============ 写入表单 ============ -->
         <section id="write-form" class="view" data-view="write">
-          <h2>写入表单</h2>
+          <h2>告诉它一件事</h2>
           <div class="write-row">
-            <select id="write-kind">
-              <option value="entities">entities</option>
-              <option value="events">events</option>
-              <option value="facts">facts</option>
-              <option value="beliefs">beliefs</option>
-              <option value="intents">intents</option>
-              <option value="impacts">impacts</option>
-              <option value="evidence">evidence</option>
-              <option value="edges">edges</option>
-            </select>
-            <button id="write-submit">写入</button>
-            <button id="write-clear">清空</button>
-          </div>
-          <div id="write-fields" class="write-fields"></div>
-          <div class="write-row">
-            <textarea id="write-text" rows="2"
-                      placeholder="文本抽取写入（需 --fallback-extractor 或 LLM extractor）"></textarea>
-            <button id="write-text-submit">抽取写入</button>
+            <textarea id="write-text" rows="3"
+                      placeholder="用大白话就行，例如：我上周五和王磊去打了篮球，他投篮很准"></textarea>
+            <button id="write-text-submit" class="ask-btn">记住</button>
           </div>
           <div class="write-row">
             <textarea id="write-batch" rows="4"
-                      placeholder="批量写入：每行一条文本（上限 100 条）"></textarea>
-            <button id="batch-submit">批量写入</button>
+                      placeholder="一次贴多条：每行一件（上限 100 条）"></textarea>
+            <button id="batch-submit">批量记住</button>
           </div>
           <div id="write-result"></div>
           <pre id="write-raw" class="json-out hidden"></pre>
+          <details class="panel sub">
+            <summary>高级：按字段精确写入（实体/事件/事实/观点…）</summary>
+            <div class="write-row">
+              <select id="write-kind">
+                <option value="entities">entities</option>
+                <option value="events">events</option>
+                <option value="facts">facts</option>
+                <option value="beliefs">beliefs</option>
+                <option value="intents">intents</option>
+                <option value="impacts">impacts</option>
+                <option value="evidence">evidence</option>
+                <option value="edges">edges</option>
+              </select>
+              <button id="write-submit">写入</button>
+              <button id="write-clear">清空</button>
+            </div>
+            <div id="write-fields" class="write-fields"></div>
+          </details>
         </section>
 
         <!-- ============ 治理操作台 ============ -->
         <section id="govern-console" class="view" data-view="govern">
-          <h2>治理操作台</h2>
+          <h2>治理</h2>
+          <div class="gov-group">
+            <h3>需要确认</h3>
+            <p class="muted">同一件事有多个说法时，自动挑出最可信的那个。</p>
+            <div class="govern-row">
+              <button data-gov="resolve-conflicts">处理有出入的记忆</button>
+              <button data-gov="resolve-entities">合并重复的人</button>
+            </div>
+          </div>
+          <div class="gov-group">
+            <h3>日常整理</h3>
+            <p class="muted">让记忆随时间自然沉淀：不重要的淡忘，重要的留下。</p>
+            <div class="govern-row">
+              <button data-gov="step-day">过一天（淡忘）</button>
+              <button data-gov="derive-impact-links">梳理影响</button>
+              <button data-gov="extract-patterns">总结习惯</button>
+              <button data-gov="reflect">月度总结</button>
+              <input id="reflect-year" type="number" value="2026" min="2000"
+                     max="2200" title="年">
+              <input id="reflect-month" type="number" value="7" min="1"
+                     max="12" title="月">
+            </div>
+          </div>
+          <div class="gov-group danger">
+            <h3>危险操作</h3>
+            <p class="muted">会改动或删除记忆，执行前有二次确认。</p>
+            <div class="govern-row">
+              <button data-gov="compress-stable" class="destructive">压缩长期记忆</button>
+              <input id="forget-target" placeholder="要忘掉的事（名称）">
+              <input id="forget-reason" placeholder="原因" value="manual">
+              <button data-gov="forget" class="destructive">忘掉</button>
+              <input id="restore-id" type="number" placeholder="记忆编号">
+              <button data-gov="restore">恢复</button>
+            </div>
+          </div>
           <div class="govern-row">
-            <button data-gov="resolve-conflicts">解决冲突</button>
-            <button data-gov="resolve-entities">实体消解</button>
-            <button data-gov="derive-impact-links">影响链推导</button>
-            <button data-gov="extract-patterns">模式提取</button>
-            <button data-gov="step-day">步进一天</button>
-            <button data-gov="compress-stable" class="destructive">压缩稳定记忆</button>
-            <button data-gov="reflect" class="destructive">月度反射</button>
-            <input id="reflect-year" type="number" value="2026" min="2000" max="2200">
-            <input id="reflect-month" type="number" value="7" min="1" max="12">
-            <input id="restore-id" type="number" placeholder="restore node_id">
-            <button data-gov="restore">恢复节点</button>
-            <input id="forget-target" placeholder="forget 目标">
-            <input id="forget-reason" placeholder="原因" value="manual">
-            <button data-gov="forget" class="destructive">遗忘</button>
             <button id="govern-raw">原始 JSON</button>
           </div>
           <div id="govern-result"></div>
@@ -245,6 +314,8 @@
   <div id="toast" class="toast hidden"></div>
 
   <script src="/static/app.js"></script>
+  <script src="/static/views/ask.js"></script>
+  <script src="/static/views/people.js"></script>
   <script src="/static/views/dashboard.js"></script>
   <script src="/static/views/graph.js"></script>
   <script src="/static/views/browser.js"></script>

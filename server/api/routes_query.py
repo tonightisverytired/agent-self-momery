@@ -94,6 +94,31 @@ def stats(memory=Depends(get_memory)):
                             detail={"code": e.code, "message": str(e)})
 
 
+@router.get("/entities")
+def entities(kind: str = "person", limit: int = 500,
+             memory=Depends(get_memory)):
+    """实体清单（0.8.2 人物聚合视图数据源）：按 kind 列出 active 实体，
+    附当前事实数，按事实数降序（人物页面板用；快照缓存，重复调用便宜）。
+    """
+    limit = max(1, min(limit, 5000))
+    try:
+        nodes = memory.store.fetch_nodes()
+        facts = memory.store.fetch_facts()
+        fact_n = {}
+        for f in facts:
+            fact_n[f.node_id] = fact_n.get(f.node_id, 0) + 1
+        items = [{"id": n.nid, "name": n.name, "kind": n.kind,
+                  "fact_count": fact_n.get(n.nid, 0)}
+                 for n in nodes
+                 if n.node_type == "entity" and n.kind == kind
+                 and n.lifecycle == "active"]
+        items.sort(key=lambda x: (-x["fact_count"], x["id"]))
+        return {"total": len(items), "items": items[:limit]}
+    except MemoryError as e:
+        raise HTTPException(status_code=_status(e),
+                            detail={"code": e.code, "message": str(e)})
+
+
 @router.get("/facts")
 def facts(entity: Optional[str] = None, key: Optional[str] = None,
           memory=Depends(get_memory)):

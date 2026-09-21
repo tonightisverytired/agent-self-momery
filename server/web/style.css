@@ -414,3 +414,112 @@ main { display: block; }
  * govern-raw-out 等）的 hidden 类不生效、始终可见。!important 用于防止
  * 后续新增的 display 规则再次覆盖显隐控制。 */
 .hidden { display: none !important; }
+
+/* ---------- 问答台（0.8.2 前端改造 A） ---------- */
+.ask-input-row { display: flex; gap: 10px; margin: 6px 0 14px; }
+#ask-input {
+  flex: 1; font-size: 15px; padding: 10px 14px; border-radius: 8px;
+}
+.ask-btn {
+  padding: 10px 28px; font-size: 15px; background: var(--accent);
+  border-color: var(--accent); color: #fff; border-radius: 8px;
+}
+.ask-btn:disabled { opacity: 0.6; cursor: wait; }
+.ask-empty-hint { color: var(--muted); padding: 24px 0; text-align: center; }
+.ask-meta {
+  display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
+  color: var(--muted); font-size: 13px; margin-bottom: 10px;
+}
+.ask-note {
+  background: #3a2d14; border: 1px solid var(--viz4); color: #f0d9a8;
+  border-radius: 6px; padding: 6px 10px; margin-bottom: 8px; font-size: 13px;
+}
+.ask-grid {
+  display: grid; gap: 10px; margin-bottom: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+}
+.ask-card {
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 8px; padding: 10px 12px;
+}
+.ask-card-head { display: flex; gap: 6px; align-items: center; }
+.ask-key { color: var(--accent); font-weight: 600; }
+.ask-val { margin: 6px 0; line-height: 1.5; word-break: break-all; }
+.score-bars { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.sb { display: inline-flex; align-items: center; gap: 4px; font-size: 11px;
+  color: var(--muted); }
+.sb-track { display: inline-block; width: 48px; height: 5px;
+  background: #0e1320; border-radius: 3px; overflow: hidden; }
+.sb-fill { display: block; height: 100%; background: var(--accent); }
+.sb-final { font-size: 12px; color: var(--text); font-weight: 600; }
+.ask-list { display: grid; gap: 6px; margin-bottom: 14px; }
+.ask-row {
+  display: flex; justify-content: space-between; gap: 10px;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 6px; padding: 7px 10px; font-size: 13px;
+}
+.ask-row i { color: var(--muted); font-style: normal; white-space: nowrap; }
+.ask-conflict { border-color: var(--danger); }
+.ask-warn-h { color: var(--danger); }
+.ask-raw { margin-top: 8px; }
+.b-ev { color: var(--viz6); border-color: var(--viz6); }
+
+/* ---------- 仪表盘 · 记忆构成（0.8.2 前端改造 B） ---------- */
+.dim-grid {
+  display: grid; gap: 8px;
+  grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+}
+.dim-card {
+  background: #0e1320; border: 1px solid var(--border);
+  border-radius: 8px; padding: 8px 10px; text-align: center;
+}
+.dim-card b { display: block; font-size: 17px; color: var(--text); }
+.dim-card span { font-size: 12px; color: var(--muted); }
+
+/* ---------- 图谱引导态（0.8.2 前端改造 C） ---------- */
+.graph-empty {
+  padding: 40px 20px; text-align: center; color: var(--muted);
+}
+.graph-empty .hub-row { margin-top: 12px; display: flex; gap: 8px;
+  justify-content: center; flex-wrap: wrap; }
+
+/* ---------- 易用性改造（0.8.2 人话化） ---------- */
+.nav-sep {
+  margin: 14px 0 4px; padding: 0 4px; font-size: 11px;
+  color: var(--muted); letter-spacing: 2px;
+}
+.ask-teach-row { display: flex; gap: 10px; margin: -6px 0 14px; }
+.ask-teach-row input { flex: 1; font-size: 13px; }
+.gov-group {
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 10px; padding: 12px 16px; margin-bottom: 14px;
+}
+.gov-group h3 { margin: 0 0 4px; font-size: 14px; color: var(--accent); }
+.gov-group .muted { margin: 0 0 10px; font-size: 12px; }
+.gov-group.danger { border-color: rgba(229, 72, 77, 0.4); }
+.gov-group.danger h3 { color: var(--danger); }
+
+/* ---------- 人物聚合视图（0.8.2） ---------- */
+.people-layout {
+  display: grid; grid-template-columns: 240px 1fr; gap: 14px;
+  align-items: start;
+}
+.people-list {
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 10px; padding: 10px;
+  max-height: 70vh; overflow: auto;
+}
+.people-list input { width: 100%; margin-bottom: 8px; }
+.people-item {
+  display: flex; justify-content: space-between; padding: 7px 9px;
+  border-radius: 6px; cursor: pointer; font-size: 13px;
+}
+.people-item:hover { background: #0e1320; }
+.people-item.on { background: #0e1320; border-left: 2px solid var(--accent); }
+.people-item i { color: var(--muted); font-style: normal; font-size: 12px; }
+.people-detail { min-width: 0; }
+.people-head {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 10px;
+}
+.people-head b { font-size: 17px; }

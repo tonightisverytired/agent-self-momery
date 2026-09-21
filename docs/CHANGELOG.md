@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.8.2（2026-09-21）— 个人助手场景：性能 + 生成式评测 + 前端问答台
+
+**性能**（PerLTQA 规模库实测，recall_context p50 4.3s → 1.45s）：
+- 存储层读快照缓存：`fetch_nodes/edges/facts/beliefs/intents/evidence/impacts/triggers/patterns/memory_links/tombstones` 按库级版号（`PRAGMA user_version`，写事务随提交自增）共享解析结果，跨实例一致；`_dt` 时间解析 lru_cache；证据校验降置信改 copy-on-write
+- `_memory_score` 身份/冲突判定预建集合（消除 O（事实²) 内层循环）；`_relevance` 命中族集按查询预建；bigram 集缓存
+- 服务端 `create_app(warmup=True)` 默认启动预热；`dnamemory-server` 新增 `--reranker`，`DNAMEMORY_BGE_PATH`/`DNAMEMORY_RERANKER_PATH` 指定本地模型目录
+
+**召回/相关度**：
+- 查询侧 key 族（`key_query_aliases`，13 族含英文 key 与「族_实例」前缀）与裁决级同义（`key_aliases`）分离——不同属性（Title/Occupation 等）不再互踢出 current_state
+- `_relevance` 族命中分层：主体锚定+族命中=1.0，仅族命中=0.3（防多主体库灌榜）；recall_context 实体锚定进候选（person ≥2 字，≤5 个）
+- `ContextBuilder.build(prefer_nids=...)`：查询点名主体的事实优先占 current_state 预算
+
+**评测**：生成式答对率口径（ops/eval_perltqa_gen.py，DeepSeek 生成+裁判）基线 0.8188（n=629）；对话摘要节点注入（ops/ingest_perltqa_summaries.py，1741 条）
+
+**前端**（零构建 SPA，导航分主功能/高级两组）：
+- **问答台**（新首页 #/ask）：自然语言提问 → 事实卡片（memory_score 分项迷你条）+ 事件/观点/证据/冲突 + 耗时/query_type；「告诉它一件事」文本记忆入口（/write 抽取）；全空结果给教学引导
+- **人物**（#/people，新视图）：按人聚合——左栏人物列表（新端点 `GET /entities?kind=person`，带事实数），右栏画像/关系/经历过的事；解决原子化存储平铺时的零散观感
+- 总览改记忆健康：记忆构成卡 + 近期治理动作（/audit）；文案全面人话化（记住的事/看法/打算/依据…）
+- 写入页：文本/批量为主，字段表单收进「高级」折叠；治理页三组布局（需要确认/日常整理/危险操作）+ 人话确认弹窗
+- 图谱大库（>800 节点）默认子图引导态（枢纽快捷入口 + 可选全图）；`?focus=` 未命中自动转子图；修复引导态进子图后图表不初始化、引导态搜索报错
+- notes 只收查询在场地的冲突解释（原先全库冲突噪声透进无关问题）；冲突解释显示节点名且并列值去重；时间表达识别但时间窗零命中时显式提示「该时间范围内没有记忆」
+
+**端点**：31 → 32（新增 `GET /entities`）
+
+**修复**：快照缓存跨实例失效与读写并发争用（test_api_graph/test_regression_concurrency 回归锁定）
+
 ## 0.8.0（2026-09-16）— 目录大重构 + 读写全能力 API + 六页可视化后台
 
 **Breaking changes**：

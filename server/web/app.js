@@ -190,16 +190,16 @@ function onResizeCharts() {
 
 /* ---------------- hash 路由 ---------------- */
 function parseHash() {
-  const h = location.hash || "#/dashboard";
+  const h = location.hash || "#/ask";
   const [path, qs] = h.slice(1).split("?");
-  const name = (path.replace(/^\/+/, "") || "dashboard");
+  const name = (path.replace(/^\/+/, "") || "ask");
   const params = {};
   if (qs) new URLSearchParams(qs).forEach((v, k) => { params[k] = v; });
   return { name, params };
 }
 async function route() {
   const { name, params } = parseHash();
-  const viewName = window.VIEWS[name] ? name : "dashboard";
+  const viewName = window.VIEWS[name] ? name : "ask";
   document.querySelectorAll(".view").forEach(v => v.classList.remove("active"));
   document.querySelectorAll(".nav-item").forEach(a =>
     a.classList.toggle("active", a.getAttribute("href") === "#/" + viewName));
@@ -225,8 +225,7 @@ async function probe() {
     if (health && health.version) {
       $("version-badge").textContent = "v" + health.version;
     }
-    const dash = window.VIEWS.dashboard;
-    if (dash && dash.refresh) dash.refresh({}).catch(() => {});
+    // 不再后台预刷仪表盘：大库下 /graph 全量较重，切到对应视图时再加载
   } catch (e) { /* 401 已提示 */ }
 }
 function init() {
@@ -234,6 +233,7 @@ function init() {
   $("token-save").onclick = () => {
     setToken($("token-input").value.trim());
     probe();
+    route();
   };
   $("stats-refresh").onclick = () => {
     const dash = window.VIEWS.dashboard;
