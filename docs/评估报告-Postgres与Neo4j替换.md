@@ -1,8 +1,8 @@
 # 评估报告：时间链换 PostgresStore、空间链换 Neo4j
 
 > 日期：2026-08-05｜版本：基于 dnamemory 0.3.0
-> 验证工具：[tools/backend_compare.py](../tools/backend_compare.py)
-> 结果数据：[simulation/backend_compare_result.json](../simulation/backend_compare_result.json)（本地，gitignore）
+> 验证工具：[ops/backend_compare.py](../ops/backend_compare.py)
+> 结果数据：[ops/data/backend_compare_result.json](../ops/data/backend_compare_result.json)（本地，gitignore）
 
 ## 1. 背景与目标
 
