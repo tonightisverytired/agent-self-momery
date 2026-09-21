@@ -16,7 +16,9 @@
 
 **实体消解（治本）**：`_write_candidates` 的 entity 候选同名复用规范节点（最低 id、跳过墓碑/删除），不再每批新建；描述空时回填不覆盖；事实/边/观点/影响的主体解析统一拨正到规范节点（此前 `_name2id` 后者覆盖，事实会绕过消解落到重复节点）；存量重复用 `resolve_entities`（保留最低 id、重挂边/事实/状态行、重复墓碑）。显式 `POST /entities` 仍可建同名节点（刻意保留的显式创建语义）。
 
-**测试**：+12（test_write_time_fixes.py 7 + test_entity_resolution_write.py 5），累计 381
+**第一人称主体兜底**：候选字段里的自我指代（我/自己/user…）精确归一到 `MemoryConfig.user_name`（默认「用户」，服务端 `DNAMEMORY_USER_NAME` 可配）；候选引用了主人名而库中无此实体时自动建 person 节点（审计 `principal_auto_create`）——此前写「我…」时关于用户自己的事实/边全部因「主体不存在」被静默丢弃；DeepSeek 提示词上下文同步携带主人名
+
+**测试**：+20（test_write_time_fixes.py 7 + test_entity_resolution_write.py 5 + test_principal_user.py 8），累计 389
 
 ## 0.8.2（2026-09-21）— 个人助手场景：性能 + 生成式评测 + 前端问答台
 

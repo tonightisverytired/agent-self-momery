@@ -41,19 +41,22 @@ def _cors_origins():
 
 
 def create_app(memory=None, path=":memory:", token=None, embedder=None,
-               reranker=None, extractor=None, dsn=None, warmup=True):
+               reranker=None, extractor=None, dsn=None, warmup=True,
+               config=None):
     """构造侧车应用。token 必须提供（fail-fast），无 token 拒绝启动。
 
     dsn 非空时改用 PostgreSQL 存储（默认留空则用 path 指定的 SQLite）。
     warmup（默认开）：lifespan 启动时跑一次小 recall，预热嵌入/reranker
     模型与读快照缓存，避免首个真实请求承担冷启动延迟（0.8.2）。
+    config：可选 MemoryConfig（0.8.3 起用于 user_name 等调用层配置）。
     """
     if token is None:
         raise ValueError("必须提供 token（Bearer 鉴权）")
     owned_memory = memory is None
     if memory is None:
         memory = MemorySystem(path=path, dsn=dsn, embedder=embedder,
-                              reranker=reranker, extractor=extractor)
+                              reranker=reranker, extractor=extractor,
+                              config=config)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):

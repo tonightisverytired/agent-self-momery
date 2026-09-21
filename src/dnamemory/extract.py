@@ -420,11 +420,16 @@ class DeepSeekExtractor:
         meta = meta or {}
         today = meta.get("today") or self.today
         tz = meta.get("timezone") or self.timezone
+        user = meta.get("user_name")
+        user_line = (f"对话的主人（第一人称「我」）是「{user}」，"
+                     "fact/belief/intent/edge/impact 中代表主人的主体名"
+                     f"请统一用「{user}」。") if user else ""
         if today:
             return (f"当前真实日期：{today}（时区 {tz}）。"
                     "文本中的“今天/明天/昨天/周末/下周”等相对时间必须换算成具体日期填入 ts；"
-                    "文本没有提到时间则 ts 必须为空字符串。")
-        return (f"时区：{tz}。文本没有提到时间时 ts 必须为空字符串，禁止编造时间。")
+                    "文本没有提到时间则 ts 必须为空字符串。" + user_line)
+        return (f"时区：{tz}。文本没有提到时间时 ts 必须为空字符串，禁止编造时间。"
+                + user_line)
 
     def _call(self, user_prompt: str) -> dict:
         last_err = None

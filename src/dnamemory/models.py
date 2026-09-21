@@ -165,6 +165,12 @@ class MemoryConfig:
     lexical_min_score: float = 0.15
     # 0.8.1：查询文本时间感知（显式日期/今天/昨天/上周等激活时间路）
     time_aware_text: bool = True
+    # 0.8.3：第一人称主体归一。写入时把候选字段里的自我指代精确改写为
+    # user_name；库中无此主体会自动建 person 实体，第一人称的
+    # 事实/边/观点不再因「主体不存在」被丢弃。
+    user_name: str = "用户"
+    user_aliases: frozenset = frozenset(
+        {"我", "自己", "本人", "user", "User", "USER", "me", "Me"})
     dense_ann_top_k: int = 1000
     evidence_min_trust: float = 1.0
     # 0.7.0 S0：同义 key 族（canonical → 别名集，业务可覆盖扩充）

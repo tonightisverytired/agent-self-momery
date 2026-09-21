@@ -331,6 +331,8 @@ class MemorySystem:
         # 自动注入当前日期：抽取器据此把「昨天/上周一」等相对时间换算成
         # 具体日期填入 ts；调用方显式传入的 today 优先（离线注入可复现）。
         meta.setdefault("today", self.clock().date().isoformat())
+        # 主人名透出给抽取器（提示词用它指代第一人称「我」）
+        meta.setdefault("user_name", self.config.user_name)
         cands = ex.extract(text, meta)
         ids, dropped = self._write_candidates(cands, meta)
         return WriteResult(accepted=len(ids), rejected=dropped, ids=ids)
@@ -343,6 +345,7 @@ class MemorySystem:
         texts = list(texts)
         meta = dict(meta or {})
         meta.setdefault("today", self.clock().date().isoformat())
+        meta.setdefault("user_name", self.config.user_name)
         if hasattr(ex, "extract_many"):
             batches = ex.extract_many(texts, meta, batch_size=batch_size)
         else:
@@ -381,6 +384,22 @@ class MemorySystem:
         # 实体名字一律拨正到规范节点：_name2id 是后者覆盖（指向最后建的
         # 重复节点），不拨正的话事实/边会绕过消解继续落到重复节点上
         local.update(entity_local)
+        # 第一人称归一：候选字段里的自我指代（我/自己/user…）精确改写为
+        # 配置的主人名。事件名是自然语句不整体匹配，不受影响。
+        uname = self.config.user_name
+        aliases = set(self.config.user_aliases) | {uname}
+
+        def _norm(v):
+            return uname if v in aliases else v
+        for c in cands:
+            if c.type == "event":
+                continue
+            if c.name:
+                c.name = _norm(c.name)
+            if c.from_:
+                c.from_ = _norm(c.from_)
+            if c.to:
+                c.to = _norm(c.to)
         with self.store.transaction() as conn:
             meta = meta or {}
             rec = meta.get("recorded_at")
@@ -413,6 +432,27 @@ class MemorySystem:
                 eid = self._auto_batch_evidence(meta, rest, now, conn)
                 ids.append(eid)
                 batch_evidence.append(eid)
+            # 主人主体兜底（0.8.3）：候选引用了主人名但库中无此实体 →
+            # 自动建 person 节点；第一人称的事实/边/观点不再因
+            # 「主体不存在」被丢弃。幂等键防重放建重。
+            if uname not in entity_local and any(
+                    (c.from_ or c.name) == uname or c.to == uname
+                    for c in rest):
+                nid = self.store.insert_node(
+                    "entity", "person", uname, "对话主人（第一人称）",
+                    None, 0.9, False, "public", 0.0, 0.0, now,
+                    evidence_ids=batch_evidence,
+                    idempotency_key=f"principal:{uname}", conn=conn)
+                ids.append(nid)
+                local[uname] = nid
+                entity_local[uname] = nid
+                embed_queue.append((nid, f"{uname} 对话主人（第一人称）"))
+                conn.execute(
+                    "INSERT INTO audit_log(op,target_type,target_id,"
+                    "reason,meta,at) VALUES(?,?,?,?,?,?)",
+                    ("principal_auto_create", "node", nid, "auto",
+                     json.dumps({"name": uname}, ensure_ascii=False),
+                     now.isoformat()))
             # 第二遍：其余候选，evidence_ids 绑定本批证据
             for c in cands:
                 if c.type == "evidence":

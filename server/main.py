@@ -72,6 +72,14 @@ def main():
     else:
         extractor = None
         print("[extractor] 未配置（写入将报 E010）", flush=True)
+    # 第一人称主体名（0.8.3）：写入时「我/自己/user」归一到它，
+    # 库中缺该主体会自动建 person 节点。
+    config = None
+    user_name = os.environ.get("DNAMEMORY_USER_NAME", "").strip()
+    if user_name:
+        from dnamemory.models import MemoryConfig
+        config = MemoryConfig(user_name=user_name)
+        print(f"[config] 主人名：{user_name}", flush=True)
     embedder = None
     if args.bge_m3:
         from dnamemory.embeddings import BGEM3Embedder
@@ -85,7 +93,8 @@ def main():
         reranker = BGEReranker(model_name=os.environ.get(
             "DNAMEMORY_RERANKER_PATH", "BAAI/bge-reranker-v2-m3"))
     app = create_app(path=path, token=token, extractor=extractor,
-                     embedder=embedder, reranker=reranker, dsn=dsn)
+                     embedder=embedder, reranker=reranker, dsn=dsn,
+                     config=config)
     uvicorn.run(app, host=host, port=port)
 
 
