@@ -70,8 +70,31 @@ def create_app(memory=None, path=":memory:", token=None, embedder=None,
         if owned_memory:
             memory.close()
 
-    app = FastAPI(title="dnamemory-server", version=__version__,
-                  lifespan=lifespan)
+    app = FastAPI(
+        title="dnamemory-server",
+        version=__version__,
+        description=(
+            "dnamemory 长期个人智能体记忆系统 API。\n\n"
+            "**鉴权**：全部接口需 Bearer token——点右上角 **Authorize** "
+            "填入 token 后即可在线试调。\n\n"
+            "**错误体**：统一 `{\"code\": \"E4xx\", \"message\": \"...\"}`；"
+            "请求体字段校验失败为 422 / `E422`。\n\n"
+            "**完整字段说明**：见仓库 `docs/api.md`。"),
+        openapi_tags=[
+            {"name": "写入",
+             "description": "结构化写入（entities/events/facts/beliefs/"
+                            "intents/impacts/evidence/edges）与文本抽取写入"
+                            "（/write、/batch）"},
+            {"name": "查询",
+             "description": "召回（/recall）、结构化上下文（/context）、"
+                            "时间线、历史、解释与元数据（stats/facts/"
+                            "neighbors/graph/entities/audit）"},
+            {"name": "治理",
+             "description": "遗忘/恢复、冲突治理、实体消解、反射压缩、"
+                            "生命周期推进"},
+            {"name": "系统", "description": "健康检查"},
+        ],
+        lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=_cors_origins(),
@@ -109,11 +132,14 @@ def create_app(memory=None, path=":memory:", token=None, embedder=None,
                      "message": f"{loc}: {msg}" if loc else msg})
 
     # 结构化写入路由（0.8.0 B-04；全局 Bearer 鉴权）
-    app.include_router(write_router, dependencies=[Depends(require_auth)])
+    app.include_router(write_router, tags=["写入"],
+                       dependencies=[Depends(require_auth)])
     # 查询/元数据路由（0.8.0 B-05）
-    app.include_router(query_router, dependencies=[Depends(require_auth)])
+    app.include_router(query_router, tags=["查询"],
+                       dependencies=[Depends(require_auth)])
     # 治理路由（0.8.0 B-06）
-    app.include_router(govern_router, dependencies=[Depends(require_auth)])
+    app.include_router(govern_router, tags=["治理"],
+                       dependencies=[Depends(require_auth)])
 
     def _query(req: RecallRequest) -> RecallQuery:
         t0 = None
@@ -142,11 +168,11 @@ def create_app(memory=None, path=":memory:", token=None, embedder=None,
             access_labels=tuple(req.access_labels)
             if req.access_labels else None)
 
-    @app.get("/health", dependencies=[Depends(require_auth)])
+    @app.get("/health", tags=["系统"], dependencies=[Depends(require_auth)])
     def health():
         return {"ok": True, "version": __version__}
 
-    @app.post("/recall", dependencies=[Depends(require_auth)])
+    @app.post("/recall", tags=["查询"], dependencies=[Depends(require_auth)])
     def recall(req: RecallRequest):
         try:
             hits = memory.recall(
@@ -158,7 +184,7 @@ def create_app(memory=None, path=":memory:", token=None, embedder=None,
                                 detail={"code": e.code,
                                         "message": str(e)})
 
-    @app.post("/forget", dependencies=[Depends(require_auth)])
+    @app.post("/forget", tags=["治理"], dependencies=[Depends(require_auth)])
     def forget(req: ForgetRequest):
         try:
             memory.forget(req.target, reason=req.reason, force=req.force)
@@ -168,7 +194,7 @@ def create_app(memory=None, path=":memory:", token=None, embedder=None,
                                 detail={"code": e.code,
                                         "message": str(e)})
 
-    @app.post("/context", dependencies=[Depends(require_auth)])
+    @app.post("/context", tags=["查询"], dependencies=[Depends(require_auth)])
     def context(req: ContextRequest):
         try:
             t0 = None
@@ -191,7 +217,7 @@ def create_app(memory=None, path=":memory:", token=None, embedder=None,
                                 detail={"code": e.code,
                                         "message": str(e)})
 
-    @app.post("/timeline", dependencies=[Depends(require_auth)])
+    @app.post("/timeline", tags=["查询"], dependencies=[Depends(require_auth)])
     def timeline(req: TimelineRequest):
         try:
             start = datetime.fromisoformat(req.start) if req.start else None
@@ -212,7 +238,7 @@ def create_app(memory=None, path=":memory:", token=None, embedder=None,
                                 detail={"code": e.code,
                                         "message": str(e)})
 
-    @app.get("/memory/{memory_id}/history",
+    @app.get("/memory/{memory_id}/history", tags=["查询"],
              dependencies=[Depends(require_auth)])
     def memory_history(memory_id: int, dimension: str = "fact"):
         try:
@@ -231,7 +257,7 @@ def create_app(memory=None, path=":memory:", token=None, embedder=None,
                                 detail={"code": e.code,
                                         "message": str(e)})
 
-    @app.get("/memory/{memory_id}/explain",
+    @app.get("/memory/{memory_id}/explain", tags=["查询"],
              dependencies=[Depends(require_auth)])
     def memory_explain(memory_id: int, kind: Optional[str] = None):
         try:

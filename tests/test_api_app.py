@@ -38,3 +38,21 @@ def test_cors_header_present(tmp_path):
                                       "Origin": "http://localhost:5173"})
         assert r.status_code == 200
         assert "access-control-allow-origin" in r.headers
+
+
+def test_openapi_docs_configured(tmp_path):
+    """Swagger（0.8.3）：/docs 可达、Bearer 方案入 OpenAPI（Authorize 可用）、
+    全端点按 写入/查询/治理/系统 分组、应用元数据完整。"""
+    app = create_app(path=str(tmp_path / "m.db"), token="t")
+    with TestClient(app) as c:
+        assert c.get("/docs").status_code == 200
+        spec = c.get("/openapi.json").json()
+    assert spec["info"]["title"] == "dnamemory-server"
+    assert spec["info"]["version"]
+    assert spec["info"]["description"]
+    schemes = spec["components"].get("securitySchemes") or {}
+    assert any(s.get("scheme") == "bearer" for s in schemes.values())
+    tagset = {t for p in spec["paths"].values() for op in p.values()
+              for t in op.get("tags", [])}
+    assert tagset == {"写入", "查询", "治理", "系统"}, tagset
+    assert len(spec["paths"]) >= 30

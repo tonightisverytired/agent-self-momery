@@ -1,8 +1,9 @@
-# dnamemory HTTP API 文档（0.8.1）
+# dnamemory HTTP API 文档（0.8.3）
 
 > 鉴权：所有端点要求 `Authorization: Bearer <token>`（启动参数 `--token` 或 `DNAMEMORY_TOKEN`）。
 > 错误体统一 `{code, message}`；状态码映射见文末。
 > 时间字段一律 ISO 格式（`2026-07-01T09:00:00` 或 `2026-07-01`）。
+> 在线文档：服务启动后访问 `/docs`（Swagger UI，右上角 Authorize 填 token 可在线试调）或 `/redoc`；端点按 写入/查询/治理/系统 分组（0.8.3）。
 
 ## 元数据
 
